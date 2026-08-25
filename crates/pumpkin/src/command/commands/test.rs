@@ -101,7 +101,7 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &PermissionRegistr
     dispatcher.register(
         command("test", DESCRIPTION).requires(PERMISSION).then(
             literal("run").then(
-                argument(ARG_NAME, StringArgumentType::SingleWord)
+                argument(ARG_NAME, StringArgumentType::GreedyPhrase)
                     .suggests(TestInstanceSuggestionProvider)
                     .executes(RunExecutor),
             ),
