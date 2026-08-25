@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+use pumpkin_nbt::{NbtCompound, nbt_compress::read_gzip_compound_tag};
 use pumpkin_protocol::codec::recipe::DynamicRecipe;
 
 use crate::command::context::command_source::CommandSource;
@@ -40,6 +41,8 @@ impl Default for DatapackManager {
         Self::new()
     }
 }
+
+
 
 impl DatapackManager {
     #[must_use]
@@ -198,6 +201,67 @@ impl DatapackManager {
         names
     }
 
+    /// Loads a Java Edition structure NBT from the currently enabled datapacks.
+    ///
+    /// Structure identifiers are resource locations such as
+    /// `minecraft:village/plains/houses/plains_small_house_1`. Both the current
+    /// `structure` directory and the legacy `structures` directory are checked.
+    /// Bedrock `.mcstructure` files are intentionally not supported.
+    pub async fn load_structure(&self, resource_location: &str) -> Result<NbtCompound, String> {
+        let (namespace, path) = parse_structure_resource_location(resource_location)?;
+
+        let loaded_packs = self.loaded_packs.read().await;
+        let mut nbt_path = None;
+        let mut unsupported_path = None;
+
+        // Later-loaded packs take precedence, matching the overwrite behavior
+        // used by the other datapack registries.
+        'packs: for pack in loaded_packs.iter().rev() {
+            for structure_dir in ["structure", "structures"] {
+                let base = pack
+                    .root_path
+                    .join("data")
+                    .join(namespace)
+                    .join(structure_dir);
+
+                let candidate = base.join(format!("{path}.nbt"));
+                if candidate.is_file() {
+                    nbt_path = Some(candidate);
+                    break 'packs;
+                }
+
+                let candidate = base.join(format!("{path}.mcstructure"));
+                if unsupported_path.is_none() && candidate.is_file() {
+                    unsupported_path = Some(candidate);
+                }
+            }
+        }
+        drop(loaded_packs);
+
+        let Some(nbt_path) = nbt_path else {
+            if let Some(path) = unsupported_path {
+                return Err(format!(
+                    "Bedrock .mcstructure files are not supported: {}",
+                    path.display()
+                ));
+            }
+            return Err(format!(
+                "Structure '{resource_location}' was not found in any enabled datapack"
+            ));
+        };
+
+        // Gzip/NBT decoding is synchronous, so keep it off the async server task.
+        let display_path = nbt_path.display().to_string();
+        tokio::task::spawn_blocking(move || {
+            let file = fs::File::open(&nbt_path)
+                .map_err(|error| format!("Failed to open structure '{display_path}': {error}"))?;
+            read_gzip_compound_tag(file)
+                .map_err(|error| format!("Failed to parse structure '{display_path}': {error}"))
+        })
+        .await
+        .map_err(|error| format!("Structure loader task failed: {error}"))?
+    }
+
     pub async fn get_function_names(&self) -> Vec<String> {
         let fns = self.functions.read().await;
         let tags = self.function_tags.read().await;
@@ -248,6 +312,40 @@ impl DatapackManager {
 
         Ok(total_executed)
     }
+}
+
+fn parse_structure_resource_location(resource_location: &str) -> Result<(&str, &str), String> {
+    let (namespace, raw_path) = resource_location
+        .split_once(':')
+        .unwrap_or(("minecraft", resource_location));
+
+    if namespace.is_empty()
+        || !namespace.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'_' | b'-' | b'.')
+        })
+    {
+        return Err(format!("Invalid structure namespace in '{resource_location}'"));
+    }
+
+    if raw_path.ends_with(".mcstructure") {
+        return Err("Bedrock .mcstructure files are not supported".to_string());
+    }
+
+    let path = raw_path.strip_suffix(".nbt").unwrap_or(raw_path);
+    if path.is_empty()
+        || path.split('/').any(|segment| segment.is_empty() || segment == "." || segment == "..")
+        || !path.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'_' | b'-' | b'.' | b'/')
+        })
+    {
+        return Err(format!("Invalid structure path in '{resource_location}'"));
+    }
+
+    Ok((namespace, path))
 }
 
 fn read_pack_mcmeta(pack_path: &Path) -> (String, u32) {
