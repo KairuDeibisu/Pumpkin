@@ -138,7 +138,7 @@ mod tests {
             r#"{
                 "type": "minecraft:block_based",
                 "environment": "minecraft:default",
-                "structure": "pumpkin:creeper_should_run_from_cat",
+                "structure": "pumpkin:some_ai_test",
                 "max_ticks": 200
             }"#,
         )
