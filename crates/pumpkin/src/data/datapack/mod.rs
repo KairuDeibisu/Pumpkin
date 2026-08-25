@@ -1,5 +1,6 @@
 pub mod function_loader;
 pub mod recipe_loader;
+pub mod test_instance;
 
 use std::collections::HashMap;
 use std::fs;
@@ -13,6 +14,8 @@ use pumpkin_protocol::codec::recipe::DynamicRecipe;
 use crate::command::context::command_source::CommandSource;
 use crate::server::Server;
 use crate::server::recipe::RecipeManager;
+
+use self::test_instance::{load_test_instances_from_dir, TestInstance, TestInstanceRegistry};
 
 #[derive(Clone, Debug)]
 pub struct LoadedDatapack {
@@ -29,6 +32,7 @@ pub struct DatapackManager {
     loaded_packs: RwLock<Vec<LoadedDatapack>>,
     functions: RwLock<HashMap<String, Vec<String>>>,
     function_tags: RwLock<HashMap<String, Vec<String>>>,
+    test_instances: RwLock<TestInstanceRegistry>,
 }
 
 impl Default for DatapackManager {
@@ -44,6 +48,7 @@ impl DatapackManager {
             loaded_packs: RwLock::new(Vec::new()),
             functions: RwLock::new(HashMap::new()),
             function_tags: RwLock::new(HashMap::new()),
+            test_instances: RwLock::new(HashMap::new()),
         }
     }
 
@@ -58,6 +63,7 @@ impl DatapackManager {
         let mut all_recipes: Vec<DynamicRecipe> = Vec::new();
         let mut all_functions: HashMap<String, Vec<String>> = HashMap::new();
         let mut all_function_tags: HashMap<String, Vec<String>> = HashMap::new();
+        let mut all_test_instances = TestInstanceRegistry::new();
 
         if datapacks_dir.is_dir() {
             let Ok(entries) = fs::read_dir(&datapacks_dir) else {
@@ -89,6 +95,7 @@ impl DatapackManager {
                 let data_dir = pack_path.join("data");
                 let mut pack_recipe_count = 0;
                 let mut pack_function_count = 0;
+                let mut pack_test_instance_count = 0;
 
                 if data_dir.is_dir()
                     && let Ok(ns_entries) = fs::read_dir(&data_dir)
@@ -136,11 +143,21 @@ impl DatapackManager {
                                 &mut all_function_tags,
                             );
                         }
+
+                        // Load game test instances
+                        let test_instance_dir = ns_path.join("test_instance");
+                        if test_instance_dir.is_dir() {
+                            pack_test_instance_count += load_test_instances_from_dir(
+                                &namespace,
+                                &test_instance_dir,
+                                &mut all_test_instances,
+                            );
+                        }
                     }
                 }
 
                 info!(
-                    "Loaded datapack '{file_name}': {pack_recipe_count} recipe(s), {pack_function_count} function(s)"
+                    "Loaded datapack '{file_name}': {pack_recipe_count} recipe(s), {pack_function_count} function(s), {pack_test_instance_count} test instance(s)"
                 );
 
                 loaded_packs_vec.push(LoadedDatapack {
@@ -159,6 +176,7 @@ impl DatapackManager {
         *self.loaded_packs.write().await = loaded_packs_vec;
         *self.functions.write().await = all_functions;
         *self.function_tags.write().await = all_function_tags;
+        *self.test_instances.write().await = all_test_instances;
     }
 
     pub async fn get_loaded_packs(&self) -> Vec<LoadedDatapack> {
@@ -167,6 +185,17 @@ impl DatapackManager {
 
     pub async fn get_functions(&self) -> HashMap<String, Vec<String>> {
         self.functions.read().await.clone()
+    }
+
+    pub async fn get_test_instance(&self, name: &str) -> Option<TestInstance> {
+        self.test_instances.read().await.get(name).cloned()
+    }
+
+    pub async fn get_test_instance_names(&self) -> Vec<String> {
+        let test_instances = self.test_instances.read().await;
+        let mut names: Vec<_> = test_instances.keys().cloned().collect();
+        names.sort_unstable();
+        names
     }
 
     pub async fn get_function_names(&self) -> Vec<String> {
