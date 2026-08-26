@@ -81,8 +81,6 @@ impl<'a, T: std::hash::Hash + Eq> ChunkTickScheduler<&'a T> {
             .is_some_and(|inner| inner.queued_ticks.contains(&(pos, value)))
     }
 
-    /// Removes every scheduled tick whose position is inside the half-open block
-    /// box `[min, max)`. This mirrors vanilla's `LevelTicks::clearArea` behavior
     pub fn clear_area(&self, min: &BlockPos, max: &BlockPos) {
         let mut inner_guard = self
             .inner

@@ -14,13 +14,37 @@ impl JavaClient {
             self.send_packet(&CFeatureFlags::new(&["minecraft:vanilla".to_string()]))
                 .await;
             let registry = Registry::get_synced(version);
+            let test_instance_entries = server
+                .datapack_manager
+                .get_test_instance_registry_entries()
+                .await;
             let mut sent_dimension_type = false;
+            let mut sent_test_instance = false;
             for reg in &registry {
                 if reg.registry_id == "minecraft:dimension_type" {
                     sent_dimension_type = true;
                 }
+                if reg.registry_id == "minecraft:test_instance" {
+                    sent_test_instance = true;
+                    self.send_packet(&CRegistryData::new(
+                        &reg.registry_id,
+                        &test_instance_entries,
+                    ))
+                    .await;
+                    continue;
+                }
                 self.send_packet(&CRegistryData::new(&reg.registry_id, &reg.registry_entries))
                     .await;
+            }
+            // The generated synced-registry table can lag behind the current protocol.
+            // ResourceSelectorArgument validates /test names against this registry on the
+            // client, so always provide it even when the static table omitted it.
+            if !sent_test_instance {
+                self.send_packet(&CRegistryData::new(
+                    &"minecraft:test_instance".to_string(),
+                    &test_instance_entries,
+                ))
+                .await;
             }
             if !sent_dimension_type {
                 let dims = [
