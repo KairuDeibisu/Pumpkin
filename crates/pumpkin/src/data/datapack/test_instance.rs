@@ -2,6 +2,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use pumpkin_data::registry::RegistryEntryData;
+use pumpkin_nbt::{Nbt, NbtCompound, tag::NbtTag};
+use serde_json::Value;
+
 pub use pumpkin_gametest::model::{TestDefinition as TestInstance, TestRotation, TestType};
 
 pub type TestInstanceRegistry = HashMap<String, TestInstance>;
@@ -55,6 +59,72 @@ fn load_test_instances_recursive(
             {
                 registry.insert(test_instance_id, instance);
             }
+        }
+    }
+}
+
+/// Encodes the datapack test definition using the same map shape consumed by
+/// `GameTestInstance.CODEC` / `TestData.CODEC` in vanilla. RegistryData expects
+/// an unnamed NBT compound payload for each registry entry.
+#[must_use]
+pub fn to_registry_entry(entry_id: String, instance: &TestInstance) -> RegistryEntryData {
+    let mut nbt = NbtCompound::new();
+    nbt.put_string(
+        "type",
+        match instance.instance_type {
+            TestType::BlockBased => "minecraft:block_based",
+        }
+        .to_string(),
+    );
+    nbt.put("environment", json_value_to_nbt(&instance.environment));
+    nbt.put_string("structure", instance.structure.clone());
+    nbt.put_int("max_ticks", instance.max_ticks);
+    nbt.put_int("setup_ticks", instance.setup_ticks);
+    nbt.put_bool("required", instance.required);
+    nbt.put_string("rotation", instance.rotation.serialized_name().to_string());
+    nbt.put_bool("manual_only", instance.manual_only);
+    nbt.put_int("max_attempts", instance.max_attempts);
+    nbt.put_int("required_successes", instance.required_successes);
+    nbt.put_bool("sky_access", instance.sky_access);
+    nbt.put_int("padding", instance.padding);
+
+    RegistryEntryData {
+        entry_id,
+        data: Some(Nbt::from(nbt).write().to_vec().into_boxed_slice()),
+    }
+}
+
+fn json_value_to_nbt(value: &Value) -> NbtTag {
+    match value {
+        Value::Null => NbtTag::String(String::new().into()),
+        Value::Bool(value) => NbtTag::Byte(i8::from(*value)),
+        Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                if let Ok(value) = i32::try_from(value) {
+                    NbtTag::Int(value)
+                } else {
+                    NbtTag::Long(value)
+                }
+            } else if let Some(value) = value.as_u64() {
+                if let Ok(value) = i32::try_from(value) {
+                    NbtTag::Int(value)
+                } else if let Ok(value) = i64::try_from(value) {
+                    NbtTag::Long(value)
+                } else {
+                    NbtTag::Double(value as f64)
+                }
+            } else {
+                NbtTag::Double(value.as_f64().unwrap_or_default())
+            }
+        }
+        Value::String(value) => NbtTag::String(value.clone().into()),
+        Value::Array(values) => NbtTag::List(values.iter().map(json_value_to_nbt).collect()),
+        Value::Object(values) => {
+            let mut compound = NbtCompound::new();
+            for (name, value) in values {
+                compound.put(name, json_value_to_nbt(value));
+            }
+            NbtTag::Compound(compound)
         }
     }
 }
