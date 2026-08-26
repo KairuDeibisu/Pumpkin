@@ -1,3 +1,4 @@
+use pumpkin_data::block_rotation::Rotation;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -18,6 +19,28 @@ pub enum TestRotation {
     Clockwise180,
     #[serde(rename = "counterclockwise_90")]
     Counterclockwise90,
+}
+
+impl TestRotation {
+    #[must_use]
+    pub const fn serialized_name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Clockwise90 => "clockwise_90",
+            Self::Clockwise180 => "180",
+            Self::Counterclockwise90 => "counterclockwise_90",
+        }
+    }
+
+    #[must_use]
+    pub const fn as_block_rotation(self) -> Rotation {
+        match self {
+            Self::None => Rotation::None,
+            Self::Clockwise90 => Rotation::Clockwise90,
+            Self::Clockwise180 => Rotation::Rotate180,
+            Self::Counterclockwise90 => Rotation::CounterClockwise90,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
