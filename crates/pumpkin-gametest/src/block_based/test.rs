@@ -1,4 +1,4 @@
-use crate::model::TestDefinition;
+use crate::model::{TestDefinition, TestRotation};
 
 #[derive(Clone, Debug)]
 pub struct BlockBasedTest {
@@ -33,5 +33,25 @@ impl BlockBasedTest {
     #[must_use]
     pub const fn setup_ticks(&self) -> u32 {
         self.definition.setup_ticks as u32
+    }
+
+    #[must_use]
+    pub const fn max_attempts(&self) -> u32 {
+        self.definition.max_attempts as u32
+    }
+
+    #[must_use]
+    pub const fn required_successes(&self) -> u32 {
+        self.definition.required_successes as u32
+    }
+
+    #[must_use]
+    pub const fn is_required(&self) -> bool {
+        self.definition.required
+    }
+
+    #[must_use]
+    pub const fn rotation(&self) -> TestRotation {
+        self.definition.rotation
     }
 }
