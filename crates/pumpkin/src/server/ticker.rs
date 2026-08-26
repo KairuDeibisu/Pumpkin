@@ -1,3 +1,7 @@
+mod gametest;
+
+pub use gametest::{GameTestRequest, enqueue_game_test};
+
 use crate::{
     STOP_INTERRUPT,
     plugin::server::{
@@ -5,31 +9,13 @@ use crate::{
     },
     server::Server,
 };
-use pumpkin_gametest::{TestRun, TestRunner};
+use gametest::drain_game_test_queue;
+use pumpkin_gametest::TestRunner;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, LazyLock};
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep_until};
 use tracing::debug;
-
-static GAME_TEST_QUEUE: LazyLock<Mutex<Vec<TestRun>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
-
-pub async fn enqueue_game_test(run: TestRun) {
-    GAME_TEST_QUEUE.lock().await.push(run);
-}
-
-async fn drain_game_test_queue(runner: &mut TestRunner) {
-    let queued = {
-        let mut queue = GAME_TEST_QUEUE.lock().await;
-        std::mem::take(&mut *queue)
-    };
-
-    for run in queued {
-        runner.enqueue(run);
-    }
-}
 
 pub struct Ticker;
 
@@ -65,7 +51,7 @@ impl Ticker {
             }
 
             if should_tick_game_tests {
-                drain_game_test_queue(&mut game_test_runner).await;
+                drain_game_test_queue(server, &mut game_test_runner).await;
                 game_test_runner.tick().await;
             }
 
