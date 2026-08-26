@@ -98,7 +98,7 @@ pub async fn place_structure(
 /// Places a test using the effective structure rotation while storing the separate
 /// controller rotation in TestInstanceBlockEntity data, as vanilla does for
 /// `/test run ... rotationSteps`.
-#[expect(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 pub async fn place_structure_with_controller_rotation(
     world: &dyn GameTestWorld,
     template: &StructureTemplate,
