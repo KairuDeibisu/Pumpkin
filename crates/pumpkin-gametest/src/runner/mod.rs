@@ -8,7 +8,9 @@ use pumpkin_util::math::position::BlockPos;
 
 use crate::block_based::BlockBasedTest;
 use crate::error::{GameTestError, GameTestResult};
-use crate::structure::{PlacedStructure, StructureTemplate, TestBlockMode, place_structure};
+use crate::structure::{
+    PlacedStructure, StructureTemplate, TestBlockMode, encase_structure, place_structure,
+};
 use crate::world::GameTestWorld;
 
 enum RunningEvaluation {
@@ -88,6 +90,17 @@ impl TestRun {
 
         match placement {
             Ok(placement) => {
+                if let Err(error) = encase_structure(
+                    self.world.as_ref(),
+                    &placement,
+                    self.test.definition().sky_access,
+                )
+                .await
+                {
+                    self.handle_attempt_failure(0, error).await;
+                    return;
+                }
+
                 self.test_y = Some(placement.test_instance_pos().0.y);
                 self.placement = Some(placement);
                 if self.test.setup_ticks() == 0 {
