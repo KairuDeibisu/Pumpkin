@@ -2,7 +2,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use pumpkin_data::BlockStateId;
-use pumpkin_gametest::{GameTestResult, GameTestWorld, StructureTemplate, place_structure};
+use pumpkin_gametest::{
+    BlockBasedTest, GameTestResult, GameTestWorld, StructureTemplate, TestRun,
+};
+use pumpkin_protocol::java::client::play::{
+    ArgumentType, CommandSuggestion, StringProtoArgBehavior, SuggestionProviders,
+};
 use pumpkin_util::PermissionLvl;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::permission::{Permission, PermissionDefault, PermissionRegistry};
@@ -11,43 +16,83 @@ use pumpkin_world::chunk::ChunkHeightmapType;
 use pumpkin_world::world::BlockFlags;
 use tracing::info;
 
-use crate::command::argument_builder::{ArgumentBuilder, argument, command, literal};
-use crate::command::argument_types::core::string::StringArgumentType;
-use crate::command::context::command_context::CommandContext;
-use crate::command::node::dispatcher::CommandDispatcher;
-use crate::command::node::{CommandExecutor, CommandExecutorResult};
-use crate::command::suggestion::provider::{SuggestionProvider, SuggestionProviderResult};
-use crate::command::suggestion::suggestions::SuggestionsBuilder;
+use crate::command::args::{
+    Arg, ArgumentConsumer, ConsumeResult, ConsumedArgs, FindArg, GetClientSideArgParser,
+    SuggestResult,
+};
+use crate::command::node::dispatcher::CommandDispatcher as LegacyCommandDispatcher;
+use crate::command::tree::builder::{argument, literal};
+use crate::command::tree::{CommandTree, RawArgs};
+use crate::command::{CommandError, CommandExecutor, CommandResult, CommandSender};
+use crate::server::Server;
+use crate::server::ticker::enqueue_game_test;
 use crate::world::World;
 
+const NAMES: [&str; 1] = ["test"];
 const DESCRIPTION: &str = "Runs a GameTest test instance.";
 const PERMISSION: &str = "minecraft:command.test";
 const ARG_NAME: &str = "name";
 const TEST_POS_Z_OFFSET_FROM_PLAYER: i32 = 3;
 
-struct TestInstanceSuggestionProvider;
+struct TestInstanceArgumentConsumer;
 
-impl SuggestionProvider for TestInstanceSuggestionProvider {
+impl GetClientSideArgParser for TestInstanceArgumentConsumer {
+    fn get_client_side_parser(&self) -> ArgumentType {
+        ArgumentType::String(StringProtoArgBehavior::SingleWord)
+    }
+
+    fn get_client_side_suggestion_type_override(&self) -> Option<SuggestionProviders> {
+        Some(SuggestionProviders::AskServer)
+    }
+}
+
+impl ArgumentConsumer for TestInstanceArgumentConsumer {
+    fn consume<'a>(
+        &'a self,
+        _sender: &'a CommandSender,
+        _server: &'a Server,
+        args: &mut RawArgs<'a>,
+    ) -> ConsumeResult<'a> {
+        let value = args.pop().map(|arg| arg.value);
+        Box::pin(async move { value.map(Arg::Simple) })
+    }
+
     fn suggest<'a>(
         &'a self,
-        context: &'a CommandContext,
-        mut builder: SuggestionsBuilder,
-    ) -> SuggestionProviderResult<'a> {
+        _sender: &CommandSender,
+        server: &'a Server,
+        _input: &'a str,
+    ) -> SuggestResult<'a> {
         Box::pin(async move {
-            for name in context.server().datapack_manager.get_test_instance_names().await {
-                builder = builder.suggest(name);
-            }
-            builder.build()
+            let suggestions = server
+                .datapack_manager
+                .get_test_instance_names()
+                .await
+                .into_iter()
+                .map(|name| CommandSuggestion::new(name, None))
+                .collect();
+            Ok(Some(suggestions))
         })
     }
 }
 
-struct CommandGameTestWorld<'a> {
-    world: &'a Arc<World>,
+impl<'a> FindArg<'a> for TestInstanceArgumentConsumer {
+    type Data = &'a str;
+
+    fn find_arg(args: &'a ConsumedArgs, name: &str) -> Result<Self::Data, CommandError> {
+        match args.get(name) {
+            Some(Arg::Simple(value)) => Ok(value),
+            _ => Err(CommandError::InvalidConsumption(Some(name.to_string()))),
+        }
+    }
+}
+
+struct CommandGameTestWorld {
+    world: Arc<World>,
 }
 
 #[async_trait]
-impl GameTestWorld for CommandGameTestWorld<'_> {
+impl GameTestWorld for CommandGameTestWorld {
     async fn block_state_id(&self, position: &BlockPos) -> BlockStateId {
         self.world.get_block_state_id_async(position).await
     }
@@ -58,7 +103,9 @@ impl GameTestWorld for CommandGameTestWorld<'_> {
         block_state_id: BlockStateId,
         flags: BlockFlags,
     ) -> GameTestResult<()> {
-        World::set_block_state(self.world, position, block_state_id, flags).await;
+        self.world
+            .set_block_state(position, block_state_id, flags)
+            .await;
         Ok(())
     }
 
@@ -72,107 +119,80 @@ impl GameTestWorld for CommandGameTestWorld<'_> {
 struct RunExecutor;
 
 impl CommandExecutor for RunExecutor {
-    fn execute<'a>(&'a self, context: &'a CommandContext) -> CommandExecutorResult<'a> {
+    fn execute<'a>(
+        &'a self,
+        sender: &'a CommandSender,
+        server: &'a Server,
+        args: &'a ConsumedArgs<'a>,
+    ) -> CommandResult<'a> {
         Box::pin(async move {
-            let name = StringArgumentType::get(context, ARG_NAME)?;
-            let server = context.server();
+            let name = TestInstanceArgumentConsumer::find_arg(args, ARG_NAME)?;
 
             let Some(test_instance) = server.datapack_manager.get_test_instance(name).await else {
-                context
-                    .source
-                    .send_error(TextComponent::text(format!(
-                        "Unknown test instance '{name}'"
-                    )))
-                    .await;
-                return Ok(0);
+                return Err(CommandError::CommandFailed(TextComponent::text(format!(
+                    "Unknown test instance '{name}'"
+                ))));
             };
 
-            let structure = match server
+            let structure = server
                 .datapack_manager
                 .load_structure(&test_instance.structure)
                 .await
-            {
-                Ok(structure) => structure,
-                Err(error) => {
-                    context
-                        .source
-                        .send_error(TextComponent::text(format!(
-                            "Failed to load test instance '{name}': {error}"
-                        )))
-                        .await;
-                    return Ok(0);
-                }
+                .map_err(|error| {
+                    CommandError::CommandFailed(TextComponent::text(format!(
+                        "Failed to load test instance '{name}': {error}"
+                    )))
+                })?;
+
+            let template = StructureTemplate::from_nbt(&structure).map_err(|error| {
+                CommandError::CommandFailed(TextComponent::text(format!(
+                    "Failed to load test instance '{name}': {error}"
+                )))
+            })?;
+
+            let world = sender
+                .world_or_first(server)
+                .ok_or(CommandError::InvalidRequirement)?;
+            let (test_x, test_z) = if let Some(source_pos) = sender.position() {
+                (
+                    source_pos.x.floor() as i32,
+                    source_pos.z.floor() as i32 + TEST_POS_Z_OFFSET_FROM_PLAYER,
+                )
+            } else {
+                let level_info = world.level_info.load();
+                (
+                    level_info.spawn_x,
+                    level_info.spawn_z + TEST_POS_Z_OFFSET_FROM_PLAYER,
+                )
             };
 
-            let template = match StructureTemplate::from_nbt(&structure) {
-                Ok(template) => template,
-                Err(error) => {
-                    context
-                        .source
-                        .send_error(TextComponent::text(format!(
-                            "Failed to place test instance '{name}': {error}"
-                        )))
-                        .await;
-                    return Ok(0);
-                }
-            };
-
-            let source_pos = &context.source.position;
-            let test_x = source_pos.x.floor() as i32;
-            let test_z = source_pos.z.floor() as i32 + TEST_POS_Z_OFFSET_FROM_PLAYER;
-            let game_test_world = CommandGameTestWorld {
-                world: context.world(),
-            };
-
-            let placement = match place_structure(
-                &game_test_world,
-                &template,
+            let structure_name = test_instance.structure.clone();
+            let test = BlockBasedTest::new(name, test_instance);
+            let game_test_world: Arc<dyn GameTestWorld> =
+                Arc::new(CommandGameTestWorld { world });
+            let run = TestRun::new(
+                test,
+                game_test_world,
+                Arc::new(template),
                 test_x,
                 test_z,
-                test_instance.padding,
-            )
-            .await
-            {
-                Ok(placement) => placement,
-                Err(error) => {
-                    context
-                        .source
-                        .send_error(TextComponent::text(format!(
-                            "Failed to place test instance '{name}': {error}"
-                        )))
-                        .await;
-                    return Ok(0);
-                }
-            };
+            );
 
-            let origin = placement.origin();
-            let placed_blocks = template.block_count();
+            enqueue_game_test(run).await;
 
             info!(
                 target: "pumpkin::gametest",
                 test = name,
-                structure = %test_instance.structure,
-                origin_x = origin.0.x,
-                origin_y = origin.0.y,
-                origin_z = origin.0.z,
-                placed_blocks,
-                nbt = %structure,
-                "Loaded GameTest structure"
+                structure = %structure_name,
+                test_x,
+                test_z,
+                "Queued GameTest"
             );
 
-            context
-                .source
-                .send_feedback(
-                    TextComponent::text(format!(
-                        "Placed test instance '{name}' structure '{}' at {} {} {} ({} blocks)",
-                        test_instance.structure,
-                        origin.0.x,
-                        origin.0.y,
-                        origin.0.z,
-                        placed_blocks
-                    )),
-                    false,
-                )
+            sender
+                .send_message(TextComponent::text(format!(
+                    "Started test instance '{name}' using structure '{structure_name}'"
+                )))
                 .await;
 
             Ok(1)
@@ -180,20 +200,22 @@ impl CommandExecutor for RunExecutor {
     }
 }
 
-pub fn register(dispatcher: &mut CommandDispatcher, registry: &PermissionRegistry) {
+pub fn init_command_tree() -> CommandTree {
+    CommandTree::new(NAMES, DESCRIPTION).then(
+        literal("run").then(
+            argument(ARG_NAME, TestInstanceArgumentConsumer).execute(RunExecutor),
+        ),
+    )
+}
+
+pub fn register(dispatcher: &mut LegacyCommandDispatcher, registry: &PermissionRegistry) {
     registry.register_permission_or_panic(Permission::new(
         PERMISSION,
         DESCRIPTION,
         PermissionDefault::Op(PermissionLvl::Two),
     ));
 
-    dispatcher.register(
-        command("test", DESCRIPTION).requires(PERMISSION).then(
-            literal("run").then(
-                argument(ARG_NAME, StringArgumentType::GreedyPhrase)
-                    .suggests(TestInstanceSuggestionProvider)
-                    .executes(RunExecutor),
-            ),
-        ),
-    );
+    dispatcher
+        .fallback_dispatcher
+        .register(init_command_tree(), PERMISSION);
 }
