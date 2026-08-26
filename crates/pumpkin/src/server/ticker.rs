@@ -5,11 +5,24 @@ use crate::{
     },
     server::Server,
 };
-use std::sync::Arc;
+use pumpkin_gametest::{TestRun, TestRunner};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep_until};
 use tracing::debug;
+
+static GAME_TEST_RUNNER: LazyLock<Mutex<TestRunner>> =
+    LazyLock::new(|| Mutex::new(TestRunner::new()));
+
+pub async fn enqueue_game_test(run: TestRun) {
+    GAME_TEST_RUNNER.lock().await.enqueue(run);
+}
+
+async fn tick_game_tests() {
+    GAME_TEST_RUNNER.lock().await.tick().await;
+}
 
 pub struct Ticker;
 
@@ -30,6 +43,8 @@ impl Ticker {
                 .fire(server, &mut ServerTickStartEvent::new(tick_number))
                 .await;
 
+            let should_tick_game_tests = manager.runs_normally() || manager.is_sprinting();
+
             if manager.is_sprinting() {
                 manager.start_sprint_tick_work();
                 server.tick().await;
@@ -39,6 +54,10 @@ impl Ticker {
                 }
             } else {
                 server.tick().await;
+            }
+
+            if should_tick_game_tests {
+                tick_game_tests().await;
             }
 
             let tick_duration_nanos = tick_start_time.elapsed().as_nanos() as i64;
