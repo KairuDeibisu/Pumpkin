@@ -41,6 +41,28 @@ impl TestRotation {
             Self::Counterclockwise90 => Rotation::CounterClockwise90,
         }
     }
+
+    /// Combines the datapack's base rotation with an additional controller rotation.
+    /// This mirrors vanilla `Rotation::getRotated`/GameTestInfo extra rotation.
+    #[must_use]
+    pub const fn then(self, extra: Self) -> Self {
+        match self.as_block_rotation().then(extra.as_block_rotation()) {
+            Rotation::None => Self::None,
+            Rotation::Clockwise90 => Self::Clockwise90,
+            Rotation::Rotate180 => Self::Clockwise180,
+            Rotation::CounterClockwise90 => Self::Counterclockwise90,
+        }
+    }
+
+    #[must_use]
+    pub const fn from_steps(steps: i32) -> Self {
+        match steps.rem_euclid(4) {
+            0 => Self::None,
+            1 => Self::Clockwise90,
+            2 => Self::Clockwise180,
+            _ => Self::Counterclockwise90,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
