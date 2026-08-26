@@ -215,12 +215,13 @@ impl ServerGameTestRunner {
         self.active.push(run);
     }
 
-    pub async fn tick(&mut self) {
+    fn apply_stop_request(&mut self) {
         if STOP_GAME_TESTS.swap(false, Ordering::AcqRel) {
             self.active.clear();
-            return;
         }
+    }
 
+    pub async fn tick(&mut self) {
         for managed in &mut self.active {
             if managed.done {
                 continue;
@@ -352,6 +353,10 @@ pub(super) async fn drain_game_test_queue(
     server: &Arc<Server>,
     runner: &mut ServerGameTestRunner,
 ) {
+    // Apply stop before draining so a new /test run issued after /test stop survives,
+    // while the tests that were active when stop was requested are discarded.
+    runner.apply_stop_request();
+
     let queued = {
         let mut queue = GAME_TEST_QUEUE.lock().await;
         std::mem::take(&mut *queue)
