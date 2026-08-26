@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use pumpkin_protocol::java::client::play::{ArgumentType, SuggestionProviders};
+use pumpkin_protocol::java::client::play::{
+    ArgumentType, CommandSuggestion, StringProtoArgBehavior, SuggestionProviders,
+};
 use pumpkin_util::PermissionLvl;
 use pumpkin_util::identifier::Identifier;
 use pumpkin_util::permission::{Permission, PermissionDefault, PermissionRegistry};
@@ -11,6 +13,7 @@ use crate::command::args::bool::BoolArgConsumer;
 use crate::command::args::bounded_num::BoundedNumArgumentConsumer;
 use crate::command::args::{
     Arg, ArgumentConsumer, ConsumeResult, ConsumedArgs, FindArg, GetClientSideArgParser,
+    SuggestResult,
 };
 use crate::command::node::dispatcher::CommandDispatcher as LegacyCommandDispatcher;
 use crate::command::tree::builder::{argument, literal};
@@ -38,16 +41,16 @@ struct TestInstanceArgumentConsumer;
 
 impl GetClientSideArgParser for TestInstanceArgumentConsumer {
     fn get_client_side_parser(&self) -> ArgumentType {
-        ArgumentType::ResourceSelector {
-            identifier: TEST_INSTANCE_REGISTRY.clone(),
-        }
+        // Vanilla uses ResourceSelectorArgument(TEST_INSTANCE), but Pumpkin's dynamic
+        // test-instance registry is datapack-backed rather than part of the generated
+        // command registry table. Some clients therefore reject an otherwise valid test
+        // before they ever ask the server for completions. A single-word parser preserves
+        // vanilla selector syntax (* and ?) while leaving authoritative validation here.
+        ArgumentType::String(StringProtoArgBehavior::SingleWord)
     }
 
     fn get_client_side_suggestion_type_override(&self) -> Option<SuggestionProviders> {
-        // Vanilla ResourceSelectorArgument obtains its completions from the synced
-        // registry. Keep that behavior so client validation and suggestions use the
-        // same minecraft:test_instance data.
-        None
+        Some(SuggestionProviders::AskServer)
     }
 }
 
@@ -55,11 +58,38 @@ impl ArgumentConsumer for TestInstanceArgumentConsumer {
     fn consume<'a>(
         &'a self,
         _sender: &'a CommandSender,
-        _server: &'a Server,
+        server: &'a Server,
         args: &mut RawArgs<'a>,
     ) -> ConsumeResult<'a> {
-        let value = args.pop().map(|arg| arg.value);
-        Box::pin(async move { value.map(Arg::Simple) })
+        let selector = args.pop().map(|arg| arg.value);
+        Box::pin(async move {
+            let selector = selector?;
+            let names = server.datapack_manager.get_test_instance_names().await;
+            names
+                .iter()
+                .any(|name| resource_selector_matches(selector, name))
+                .then_some(Arg::Simple(selector))
+        })
+    }
+
+    fn suggest<'a>(
+        &'a self,
+        _sender: &CommandSender,
+        server: &'a Server,
+        input: &'a str,
+    ) -> SuggestResult<'a> {
+        Box::pin(async move {
+            let current = current_suggestion_token(input);
+            let suggestions = server
+                .datapack_manager
+                .get_test_instance_names()
+                .await
+                .into_iter()
+                .filter(|name| resource_suggestion_matches(current, name))
+                .map(|name| CommandSuggestion::new(name, None))
+                .collect();
+            Ok(Some(suggestions))
+        })
     }
 }
 
@@ -242,6 +272,41 @@ pub fn register(dispatcher: &mut LegacyCommandDispatcher, registry: &PermissionR
     dispatcher
         .fallback_dispatcher
         .register(init_command_tree(), PERMISSION);
+}
+
+fn current_suggestion_token(input: &str) -> &str {
+    if input.chars().next_back().is_some_and(char::is_whitespace) {
+        ""
+    } else {
+        input.rsplit(char::is_whitespace).next().unwrap_or("")
+    }
+}
+
+fn resource_suggestion_matches(input: &str, candidate: &str) -> bool {
+    if input.is_empty() {
+        return true;
+    }
+
+    let input = input.to_ascii_lowercase();
+    let candidate = candidate.to_ascii_lowercase();
+    if input.contains(':') {
+        matches_suggestion_substring(&input, &candidate)
+    } else if let Some((namespace, path)) = candidate.split_once(':') {
+        matches_suggestion_substring(&input, namespace)
+            || matches_suggestion_substring(&input, path)
+    } else {
+        matches_suggestion_substring(&input, &candidate)
+    }
+}
+
+fn matches_suggestion_substring(pattern: &str, input: &str) -> bool {
+    if input.starts_with(pattern) {
+        return true;
+    }
+
+    input.char_indices().any(|(index, character)| {
+        matches!(character, '.' | '_' | '/') && input[index + character.len_utf8()..].starts_with(pattern)
+    })
 }
 
 fn resource_selector_matches(selector: &str, name: &str) -> bool {
