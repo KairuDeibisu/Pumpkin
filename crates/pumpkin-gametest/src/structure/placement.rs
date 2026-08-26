@@ -162,6 +162,57 @@ pub async fn place_structure(
     ))
 }
 
+/// Encloses the structure with the same one-block barrier shell used by Vanilla
+/// `TestInstanceBlockEntity::encaseStructure`. The floor and four walls are always
+/// present; the ceiling is omitted when the test requests sky access.
+pub async fn encase_structure(
+    world: &dyn GameTestWorld,
+    placement: &PlacedStructure,
+    sky_access: bool,
+) -> GameTestResult<()> {
+    let origin = placement.origin();
+    let size = placement.size();
+    let low = BlockPos::new(origin.0.x - 1, origin.0.y - 1, origin.0.z - 1);
+    let high = BlockPos::new(
+        origin.0.x + size[0],
+        origin.0.y + size[1],
+        origin.0.z + size[2],
+    );
+
+    for x in low.0.x..=high.0.x {
+        for y in low.0.y..=high.0.y {
+            for z in low.0.z..=high.0.z {
+                let is_wall_or_floor = x == low.0.x
+                    || x == high.0.x
+                    || z == low.0.z
+                    || z == high.0.z
+                    || y == low.0.y;
+                let is_ceiling = y == high.0.y;
+                if !is_wall_or_floor && (sky_access || !is_ceiling) {
+                    continue;
+                }
+
+                let position = BlockPos::new(x, y, z);
+                // With zero padding the controller occupies the north wall. Vanilla
+                // explicitly preserves TEST_INSTANCE_BLOCKs while encasing.
+                if position == *placement.test_instance_pos() {
+                    continue;
+                }
+
+                world
+                    .set_block_state(
+                        &position,
+                        Block::BARRIER.default_state.id,
+                        BlockFlags::NOTIFY_ALL,
+                    )
+                    .await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub async fn clear_structure_area(
     world: &dyn GameTestWorld,
     origin: &BlockPos,
