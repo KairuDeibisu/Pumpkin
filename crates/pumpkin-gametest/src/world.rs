@@ -48,6 +48,9 @@ pub trait GameTestWorld: Send + Sync {
         max: &BlockPos,
     ) -> GameTestResult<()>;
 
+    /// Removes queued block events inside `[min, max)` after structure replacement.
+    async fn clear_block_events(&self, min: &BlockPos, max: &BlockPos) -> GameTestResult<()>;
+
     async fn set_test_instance_running(&self, position: &BlockPos) -> GameTestResult<()>;
 
     async fn set_test_instance_success(&self, position: &BlockPos) -> GameTestResult<()>;
