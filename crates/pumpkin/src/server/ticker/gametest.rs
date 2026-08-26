@@ -56,6 +56,7 @@ impl GameTestRetryOptions {
 
     #[must_use]
     fn has_tries_left(self, attempts: u32, successes: u32) -> bool {
+        // Exact RetryOptions::hasTriesLeft semantics from vanilla.
         let has_failures = attempts != successes;
         let has_more_attempts = self.unlimited_tries()
             || attempts < u32::try_from(self.number_of_tries).unwrap_or(u32::MAX);
@@ -222,8 +223,12 @@ impl ServerGameTestRunner {
     }
 
     pub async fn tick(&mut self) {
+        // Vanilla's GameTestTicker iterates a copy-on-write collection. A retry is
+        // scheduled as a copyReset GameTestInfo and is not turned back into a queued
+        // state from inside the completion callback. Mirror that two-phase lifecycle:
+        // finish every current execution first, then install scheduled reruns.
         for managed in &mut self.active {
-            if managed.done {
+            if managed.done || managed.rerun_scheduled {
                 continue;
             }
 
@@ -231,6 +236,10 @@ impl ServerGameTestRunner {
             if managed.run.state.is_finished() {
                 managed.handle_completion().await;
             }
+        }
+
+        for managed in &mut self.active {
+            managed.install_scheduled_rerun();
         }
 
         self.active.retain(|managed| !managed.done);
@@ -242,61 +251,83 @@ struct ManagedGameTest {
     world: Arc<World>,
     retry_options: GameTestRetryOptions,
     report: Arc<GameTestBatchReport>,
-    command_attempts: u32,
-    command_successes: u32,
+    attempts: u32,
+    successes: u32,
     started_at: Instant,
+    rerun_scheduled: bool,
     done: bool,
 }
 
 impl ManagedGameTest {
     async fn handle_completion(&mut self) {
-        let (passed, tick, error_message) = match &self.run.state {
+        let (passed, tick, error) = match &self.run.state {
             TestState::Passed { tick } => (true, *tick, None),
-            TestState::Failed { tick, error } => (false, *tick, Some(error.to_string())),
+            TestState::Failed { tick, error } => (false, *tick, Some(error)),
             _ => return,
         };
 
-        self.command_attempts = self.command_attempts.saturating_add(1);
+        self.attempts = self.attempts.saturating_add(1);
         if passed {
-            self.command_successes = self.command_successes.saturating_add(1);
+            self.successes = self.successes.saturating_add(1);
         }
         let elapsed_ms = self.started_at.elapsed().as_millis();
+        let is_flaky = self.run.test.max_attempts() > 1;
 
-        if passed {
-            let text = if self.retry_options.has_retries() {
-                self.retry_status(true, elapsed_ms)
-            } else {
-                format!(
-                    "{} passed! ({}ms / {}gameticks)",
-                    self.run.test.id(),
-                    elapsed_ms,
-                    tick
+        // This intentionally follows ReportGameListener's ordering. Command retry
+        // options take precedence for a passing execution. Flaky failure handling,
+        // however, uses max_attempts/required_successes exactly as vanilla does.
+        let should_rerun = if passed {
+            if self.retry_options.has_retries() {
+                broadcast_world(
+                    &self.world,
+                    TextComponent::text(self.retry_status(true, elapsed_ms))
+                        .color_named(NamedColor::Green),
                 )
-            };
-            broadcast_world(
-                &self.world,
-                TextComponent::text(text).color_named(NamedColor::Green),
-            )
-            .await;
-        } else {
-            let optional = if self.run.test.is_required() {
-                ""
+                .await;
+                self.retry_options
+                    .has_tries_left(self.attempts, self.successes)
+            } else if !is_flaky {
+                broadcast_world(
+                    &self.world,
+                    TextComponent::text(format!(
+                        "{} passed! ({}ms / {}gameticks)",
+                        self.run.test.id(),
+                        elapsed_ms,
+                        tick
+                    ))
+                    .color_named(NamedColor::Green),
+                )
+                .await;
+                false
+            } else if self.successes >= self.run.test.required_successes() {
+                broadcast_world(
+                    &self.world,
+                    TextComponent::text(format!(
+                        "{} passed {} times of {} attempts.",
+                        self.run.test.id(),
+                        self.successes,
+                        self.attempts
+                    ))
+                    .color_named(NamedColor::Green),
+                )
+                .await;
+                false
             } else {
-                "(optional) "
-            };
-            let text = format!(
-                "{}{} failed! {}",
-                optional,
-                self.run.test.id(),
-                error_message.as_deref().unwrap_or("unknown error")
-            );
-            let color = if self.run.test.is_required() {
-                NamedColor::Red
-            } else {
-                NamedColor::Yellow
-            };
-            broadcast_world(&self.world, TextComponent::text(text).color_named(color)).await;
-
+                broadcast_world(
+                    &self.world,
+                    TextComponent::text(format!(
+                        "Flaky test {} succeeded, attempt: {} successes: {}",
+                        self.run.test.id(),
+                        self.attempts,
+                        self.successes
+                    ))
+                    .color_named(NamedColor::Green),
+                )
+                .await;
+                true
+            }
+        } else if !is_flaky {
+            self.report_failure(error.map(ToString::to_string).as_deref()).await;
             if self.retry_options.has_retries() {
                 broadcast_world(
                     &self.world,
@@ -304,38 +335,108 @@ impl ManagedGameTest {
                         .color_named(NamedColor::Red),
                 )
                 .await;
+                self.retry_options
+                    .has_tries_left(self.attempts, self.successes)
+            } else {
+                false
             }
-        }
+        } else {
+            let max_attempts = self.run.test.max_attempts();
+            let required_successes = self.run.test.required_successes();
+            let mut text = format!(
+                "Flaky test {} failed, attempt: {}/{}",
+                self.run.test.id(),
+                self.attempts,
+                max_attempts
+            );
+            if required_successes > 1 {
+                text.push_str(&format!(
+                    ", successes: {} ({} required)",
+                    self.successes, required_successes
+                ));
+            }
+            broadcast_world(
+                &self.world,
+                TextComponent::text(text).color_named(NamedColor::Yellow),
+            )
+            .await;
 
-        if self
-            .retry_options
-            .has_tries_left(self.command_attempts, self.command_successes)
-        {
-            self.run.reset_for_rerun();
-            self.started_at = Instant::now();
+            if max_attempts
+                .saturating_sub(self.attempts)
+                .saturating_add(self.successes)
+                >= required_successes
+            {
+                true
+            } else {
+                let last_error = error
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "unknown error".to_string());
+                let exhausted = GameTestError::ExhaustedAttempts {
+                    attempts: self.attempts,
+                    successes: self.successes,
+                    required_successes,
+                    last_error,
+                };
+                self.report_failure(Some(&exhausted.to_string())).await;
+                false
+            }
+        };
+
+        if should_rerun {
+            self.rerun_scheduled = true;
             return;
         }
 
         self.report
             .finish_test(
                 self.run.test.is_required(),
-                self.command_attempts,
-                self.command_successes,
+                self.attempts,
+                self.successes,
             )
             .await;
         self.done = true;
     }
 
+    fn install_scheduled_rerun(&mut self) {
+        if !self.rerun_scheduled || self.done {
+            return;
+        }
+
+        self.run = self.run.copy_reset();
+        self.started_at = Instant::now();
+        self.rerun_scheduled = false;
+    }
+
+    async fn report_failure(&self, error_message: Option<&str>) {
+        let optional = if self.run.test.is_required() {
+            ""
+        } else {
+            "(optional) "
+        };
+        let text = format!(
+            "{}{} failed! {}",
+            optional,
+            self.run.test.id(),
+            error_message.unwrap_or("unknown error")
+        );
+        let color = if self.run.test.is_required() {
+            NamedColor::Red
+        } else {
+            NamedColor::Yellow
+        };
+        broadcast_world(&self.world, TextComponent::text(text).color_named(color)).await;
+    }
+
     fn retry_status(&self, passed: bool, elapsed_ms: u128) -> String {
-        let failures = self.command_attempts.saturating_sub(self.command_successes);
+        let failures = self.attempts.saturating_sub(self.successes);
         let mut report = format!(
             "[Run: {:4}, Ok: {:4}, Fail: {:4}",
-            self.command_attempts, self.command_successes, failures
+            self.attempts, self.successes, failures
         );
         if !self.retry_options.unlimited_tries() {
             let left = u32::try_from(self.retry_options.number_of_tries)
                 .unwrap_or_default()
-                .saturating_sub(self.command_attempts);
+                .saturating_sub(self.attempts);
             report.push_str(&format!(", Left: {left:4}"));
         }
         report.push(']');
@@ -417,9 +518,10 @@ async fn prepare_test_run(
         world: request.world,
         retry_options: request.retry_options,
         report: request.report,
-        command_attempts: 0,
-        command_successes: 0,
+        attempts: 0,
+        successes: 0,
         started_at: Instant::now(),
+        rerun_scheduled: false,
         done: false,
     })
 }
@@ -517,6 +619,42 @@ impl GameTestWorld for ServerGameTestWorld {
 
         self.world.remove_block_entity(position);
         self.world.add_block_entity(entity);
+        Ok(())
+    }
+
+    async fn clear_non_player_entities(
+        &self,
+        min: &BlockPos,
+        max: &BlockPos,
+    ) -> GameTestResult<()> {
+        let min_x = f64::from(min.0.x);
+        let min_y = f64::from(min.0.y);
+        let min_z = f64::from(min.0.z);
+        let max_x = f64::from(max.0.x);
+        let max_y = f64::from(max.0.y);
+        let max_z = f64::from(max.0.z);
+
+        // World::entities intentionally excludes players, matching vanilla's
+        // `removeEntities` filter while avoiding any player removal path entirely.
+        let entities = self.world.entities.load_full();
+        let to_remove: Vec<_> = entities
+            .iter()
+            .filter(|entity| {
+                let bounds = entity.get_entity().bounding_box.load();
+                bounds.max.x > min_x
+                    && bounds.min.x < max_x
+                    && bounds.max.y > min_y
+                    && bounds.min.y < max_y
+                    && bounds.max.z > min_z
+                    && bounds.min.z < max_z
+            })
+            .cloned()
+            .collect();
+        drop(entities);
+
+        for entity in to_remove {
+            self.world.remove_entity(entity.as_ref()).await;
+        }
         Ok(())
     }
 
