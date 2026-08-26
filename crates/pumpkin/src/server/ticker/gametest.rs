@@ -263,6 +263,7 @@ struct ManagedGameTest {
 }
 
 impl ManagedGameTest {
+    #[expect(clippy::too_many_lines)]
     async fn handle_completion(&mut self) {
         let (passed, tick, error) = match &self.run.state {
             TestState::Passed { tick } => (true, *tick, None),
@@ -680,8 +681,7 @@ impl GameTestWorld for ServerGameTestWorld {
 
         for chunk_x in min_chunk_x..=max_chunk_x {
             for chunk_z in min_chunk_z..=max_chunk_z {
-                let chunk_pos =
-                    pumpkin_util::math::vector2::Vector2::new(chunk_x, chunk_z);
+                let chunk_pos = pumpkin_util::math::vector2::Vector2::new(chunk_x, chunk_z);
                 if let Some(chunk) = self.world.level.loaded_chunks.get(&chunk_pos) {
                     chunk.block_ticks.clear_area(min, max);
                     if !chunk.block_ticks.has_ticks() && !chunk.fluid_ticks.has_ticks() {
@@ -690,6 +690,13 @@ impl GameTestWorld for ServerGameTestWorld {
                 }
             }
         }
+        Ok(())
+    }
+
+    async fn clear_block_events(&self, min: &BlockPos, max: &BlockPos) -> GameTestResult<()> {
+        self.world
+            .clear_synced_block_events_in_box(min, max)
+            .await;
         Ok(())
     }
 
