@@ -1,7 +1,7 @@
 use std::{
     pin::Pin,
-    sync::atomic::{AtomicBool, Ordering},
     sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use pumpkin_nbt::compound::NbtCompound;
@@ -115,11 +115,12 @@ impl TestBlockBlockEntity {
     }
 
     async fn log(&self) {
-        let message = self.message.read().await;
+        let message = self.message().await;
         if !message.trim().is_empty() {
+            let mode = self.mode().await;
             info!(
                 target: "pumpkin::gametest",
-                mode = self.mode().await.serialized_name(),
+                mode = mode.serialized_name(),
                 position = %self.position,
                 message = %message,
                 "Test block"
