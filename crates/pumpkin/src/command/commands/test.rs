@@ -1,25 +1,40 @@
-use pumpkin_protocol::java::client::play::{ArgumentType, SuggestionProviders};
+use std::sync::Arc;
+
+use pumpkin_protocol::java::client::play::{
+    ArgumentType, CommandSuggestion, SuggestionProviders,
+};
 use pumpkin_util::PermissionLvl;
 use pumpkin_util::identifier::Identifier;
 use pumpkin_util::permission::{Permission, PermissionDefault, PermissionRegistry};
 use pumpkin_util::text::TextComponent;
 use tracing::info;
 
+use crate::command::args::bool::BoolArgConsumer;
+use crate::command::args::bounded_num::BoundedNumArgumentConsumer;
 use crate::command::args::{
     Arg, ArgumentConsumer, ConsumeResult, ConsumedArgs, FindArg, GetClientSideArgParser,
+    SuggestResult,
 };
 use crate::command::node::dispatcher::CommandDispatcher as LegacyCommandDispatcher;
 use crate::command::tree::builder::{argument, literal};
 use crate::command::tree::{CommandTree, RawArgs};
 use crate::command::{CommandError, CommandExecutor, CommandResult, CommandSender};
 use crate::server::Server;
-use crate::server::ticker::{GameTestRequest, enqueue_game_test};
+use crate::server::ticker::{
+    GameTestBatchReport, GameTestRequest, GameTestRetryOptions, enqueue_game_test,
+};
 
 const NAMES: [&str; 1] = ["test"];
 const DESCRIPTION: &str = "Runs a GameTest test instance.";
 const PERMISSION: &str = "minecraft:command.test";
-const ARG_NAME: &str = "name";
+const ARG_TESTS: &str = "tests";
+const ARG_NUMBER_OF_TIMES: &str = "numberOfTimes";
+const ARG_UNTIL_FAILED: &str = "untilFailed";
+const ARG_ROTATION_STEPS: &str = "rotationSteps";
+const ARG_TESTS_PER_ROW: &str = "testsPerRow";
 const TEST_POS_Z_OFFSET_FROM_PLAYER: i32 = 3;
+const TEST_GRID_SPACING: i32 = 64;
+const DEFAULT_TESTS_PER_ROW: i32 = 8;
 const TEST_INSTANCE_REGISTRY: Identifier = Identifier::parse_static("minecraft:test_instance");
 
 struct TestInstanceArgumentConsumer;
@@ -32,7 +47,10 @@ impl GetClientSideArgParser for TestInstanceArgumentConsumer {
     }
 
     fn get_client_side_suggestion_type_override(&self) -> Option<SuggestionProviders> {
-        None
+        // Vanilla can source these suggestions from its client registry. Pumpkin's
+        // datapack registry is dynamic, so ask the server as well; the wire parser
+        // remains minecraft:resource_selector for vanilla-compatible validation.
+        Some(SuggestionProviders::AskServer)
     }
 }
 
@@ -40,11 +58,41 @@ impl ArgumentConsumer for TestInstanceArgumentConsumer {
     fn consume<'a>(
         &'a self,
         _sender: &'a CommandSender,
-        _server: &'a Server,
+        server: &'a Server,
         args: &mut RawArgs<'a>,
     ) -> ConsumeResult<'a> {
-        let value = args.pop().map(|arg| arg.value);
-        Box::pin(async move { value.map(Arg::Simple) })
+        let value = args.last().map(|arg| arg.value);
+        Box::pin(async move {
+            let value = value?;
+            let names = server.datapack_manager.get_test_instance_names().await;
+            if names.iter().any(|name| resource_selector_matches(value, name)) {
+                args.pop();
+                Some(Arg::Simple(value))
+            } else {
+                None
+            }
+        })
+    }
+
+    fn suggest<'a>(
+        &'a self,
+        _sender: &CommandSender,
+        server: &'a Server,
+        input: &'a str,
+    ) -> SuggestResult<'a> {
+        Box::pin(async move {
+            let fragment = input
+                .split_whitespace()
+                .next_back()
+                .unwrap_or_default();
+            let names = server.datapack_manager.get_test_instance_names().await;
+            let suggestions = names
+                .into_iter()
+                .filter(|name| suggestion_matches(fragment, name))
+                .map(|name| CommandSuggestion::new(name, None))
+                .collect();
+            Ok(Some(suggestions))
+        })
     }
 }
 
@@ -69,11 +117,52 @@ impl CommandExecutor for RunExecutor {
         args: &'a ConsumedArgs<'a>,
     ) -> CommandResult<'a> {
         Box::pin(async move {
-            let name = TestInstanceArgumentConsumer::find_arg(args, ARG_NAME)?;
+            let selector = TestInstanceArgumentConsumer::find_arg(args, ARG_TESTS)?;
+            let names = server.datapack_manager.get_test_instance_names().await;
+            let selected: Vec<_> = names
+                .into_iter()
+                .filter(|name| resource_selector_matches(selector, name))
+                .collect();
+            if selected.is_empty() {
+                return Err(CommandError::CommandFailed(TextComponent::translate_cross(
+                    "argument.resource_selector.not_found",
+                    "argument.resource_selector.not_found",
+                    [
+                        TextComponent::text(selector.to_string()),
+                        TextComponent::text(TEST_INSTANCE_REGISTRY.to_string()),
+                    ],
+                )));
+            }
+
+            let number_was_supplied = args.contains_key(ARG_NUMBER_OF_TIMES);
+            let number_of_times = if number_was_supplied {
+                BoundedNumArgumentConsumer::<i32>::find_arg(args, ARG_NUMBER_OF_TIMES)??
+            } else {
+                1
+            };
+            let until_failed = if args.contains_key(ARG_UNTIL_FAILED) {
+                BoolArgConsumer::find_arg(args, ARG_UNTIL_FAILED)?
+            } else {
+                // Vanilla RetryOptions.noRetries() is (1, true), while specifying
+                // numberOfTimes without untilFailed defaults haltOnFailure to false.
+                !number_was_supplied
+            };
+            let rotation_steps = if args.contains_key(ARG_ROTATION_STEPS) {
+                BoundedNumArgumentConsumer::<i32>::find_arg(args, ARG_ROTATION_STEPS)??
+            } else {
+                0
+            };
+            let tests_per_row = if args.contains_key(ARG_TESTS_PER_ROW) {
+                BoundedNumArgumentConsumer::<i32>::find_arg(args, ARG_TESTS_PER_ROW)??
+            } else {
+                DEFAULT_TESTS_PER_ROW
+            }
+            .max(1);
+
             let world = sender
                 .world_or_first(server)
                 .ok_or(CommandError::InvalidRequirement)?;
-            let (test_x, test_z) = if let Some(source_pos) = sender.position() {
+            let (base_x, base_z) = if let Some(source_pos) = sender.position() {
                 (
                     source_pos.x.floor() as i32,
                     source_pos.z.floor() as i32 + TEST_POS_Z_OFFSET_FROM_PLAYER,
@@ -86,21 +175,44 @@ impl CommandExecutor for RunExecutor {
                 )
             };
 
-            enqueue_game_test(GameTestRequest::new(name, world, test_x, test_z)).await;
-
-            info!(
-                target: "pumpkin::gametest",
-                test = name,
-                test_x,
-                test_z,
-                "Queued GameTest request"
-            );
-
             sender
-                .send_message(TextComponent::text(format!(
-                    "Queued test instance '{name}'"
-                )))
+                .send_message(TextComponent::translate_cross(
+                    "commands.test.run.running",
+                    "commands.test.run.running",
+                    [TextComponent::text(selected.len().to_string())],
+                ))
                 .await;
+
+            let report = Arc::new(GameTestBatchReport::new(sender.clone(), selected.len()));
+            let retry_options = GameTestRetryOptions::new(number_of_times, until_failed);
+            for (index, test_id) in selected.into_iter().enumerate() {
+                let index = index as i32;
+                let column = index % tests_per_row;
+                let row = index / tests_per_row;
+                let test_x = base_x + column * TEST_GRID_SPACING;
+                let test_z = base_z + row * TEST_GRID_SPACING;
+                enqueue_game_test(GameTestRequest::new(
+                    test_id.clone(),
+                    world.clone(),
+                    test_x,
+                    test_z,
+                    rotation_steps,
+                    retry_options,
+                    report.clone(),
+                ))
+                .await;
+
+                info!(
+                    target: "pumpkin::gametest",
+                    test = %test_id,
+                    test_x,
+                    test_z,
+                    number_of_times,
+                    until_failed,
+                    rotation_steps,
+                    "Queued GameTest request"
+                );
+            }
 
             Ok(1)
         })
@@ -108,11 +220,31 @@ impl CommandExecutor for RunExecutor {
 }
 
 pub fn init_command_tree() -> CommandTree {
-    CommandTree::new(NAMES, DESCRIPTION).then(
-        literal("run").then(
-            argument(ARG_NAME, TestInstanceArgumentConsumer).execute(RunExecutor),
-        ),
+    let tests_per_row = argument(
+        ARG_TESTS_PER_ROW,
+        BoundedNumArgumentConsumer::<i32>::new(),
     )
+    .execute(RunExecutor);
+    let rotation_steps = argument(
+        ARG_ROTATION_STEPS,
+        BoundedNumArgumentConsumer::<i32>::new(),
+    )
+    .execute(RunExecutor)
+    .then(tests_per_row);
+    let until_failed = argument(ARG_UNTIL_FAILED, BoolArgConsumer)
+        .execute(RunExecutor)
+        .then(rotation_steps);
+    let number_of_times = argument(
+        ARG_NUMBER_OF_TIMES,
+        BoundedNumArgumentConsumer::<i32>::new().min(0),
+    )
+    .execute(RunExecutor)
+    .then(until_failed);
+    let tests = argument(ARG_TESTS, TestInstanceArgumentConsumer)
+        .execute(RunExecutor)
+        .then(number_of_times);
+
+    CommandTree::new(NAMES, DESCRIPTION).then(literal("run").then(tests))
 }
 
 pub fn register(dispatcher: &mut LegacyCommandDispatcher, registry: &PermissionRegistry) {
@@ -125,4 +257,49 @@ pub fn register(dispatcher: &mut LegacyCommandDispatcher, registry: &PermissionR
     dispatcher
         .fallback_dispatcher
         .register(init_command_tree(), PERMISSION);
+}
+
+fn suggestion_matches(fragment: &str, name: &str) -> bool {
+    fragment.is_empty()
+        || name.starts_with(fragment)
+        || name
+            .strip_prefix("minecraft:")
+            .is_some_and(|path| path.starts_with(fragment))
+}
+
+fn resource_selector_matches(selector: &str, name: &str) -> bool {
+    let selector = if selector.contains(':') {
+        selector.to_string()
+    } else {
+        format!("minecraft:{selector}")
+    };
+    wildcard_match(selector.as_bytes(), name.as_bytes())
+}
+
+fn wildcard_match(pattern: &[u8], value: &[u8]) -> bool {
+    let (mut p, mut v) = (0usize, 0usize);
+    let mut star = None;
+    let mut retry_v = 0usize;
+
+    while v < value.len() {
+        if p < pattern.len() && (pattern[p] == b'?' || pattern[p] == value[v]) {
+            p += 1;
+            v += 1;
+        } else if p < pattern.len() && pattern[p] == b'*' {
+            star = Some(p);
+            p += 1;
+            retry_v = v;
+        } else if let Some(star_index) = star {
+            p = star_index + 1;
+            retry_v += 1;
+            v = retry_v;
+        } else {
+            return false;
+        }
+    }
+
+    while p < pattern.len() && pattern[p] == b'*' {
+        p += 1;
+    }
+    p == pattern.len()
 }
