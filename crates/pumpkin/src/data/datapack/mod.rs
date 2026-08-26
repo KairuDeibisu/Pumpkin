@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+use pumpkin_data::registry::RegistryEntryData;
 use pumpkin_nbt::{NbtCompound, nbt_compress::read_gzip_compound_tag};
 use pumpkin_protocol::codec::recipe::DynamicRecipe;
 
@@ -16,7 +17,9 @@ use crate::command::context::command_source::CommandSource;
 use crate::server::Server;
 use crate::server::recipe::RecipeManager;
 
-use self::test_instance::{load_test_instances_from_dir, TestInstance, TestInstanceRegistry};
+use self::test_instance::{
+    TestInstance, TestInstanceRegistry, load_test_instances_from_dir, to_registry_entry,
+};
 
 #[derive(Clone, Debug)]
 pub struct LoadedDatapack {
@@ -41,8 +44,6 @@ impl Default for DatapackManager {
         Self::new()
     }
 }
-
-
 
 impl DatapackManager {
     #[must_use]
@@ -199,6 +200,19 @@ impl DatapackManager {
         let mut names: Vec<_> = test_instances.keys().cloned().collect();
         names.sort_unstable();
         names
+    }
+
+    /// Returns datapack test instances in the protocol's synced-registry entry format.
+    /// The vanilla Test Instance Block renderer resolves required/padding/base rotation
+    /// through this registry using the controller's `data.test` resource key.
+    pub async fn get_test_instance_registry_entries(&self) -> Vec<RegistryEntryData> {
+        let test_instances = self.test_instances.read().await;
+        let mut entries: Vec<_> = test_instances
+            .iter()
+            .map(|(id, instance)| to_registry_entry(id.clone(), instance))
+            .collect();
+        entries.sort_unstable_by(|left, right| left.entry_id.cmp(&right.entry_id));
+        entries
     }
 
     /// Loads a Java Edition structure NBT from the currently enabled datapacks.
