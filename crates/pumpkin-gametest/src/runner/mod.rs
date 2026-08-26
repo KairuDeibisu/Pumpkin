@@ -20,6 +20,8 @@ enum RunningEvaluation {
 pub struct TestRun {
     pub test: BlockBasedTest,
     pub state: TestState,
+    /// Current 1-based attempt number. Vanilla increments attempts when the
+    /// structure is loaded for an attempt.
     pub attempt: u32,
     pub successes: u32,
     pub placement: Option<PlacedStructure>,
@@ -56,79 +58,83 @@ impl TestRun {
             return;
         }
 
-        if matches!(&self.state, TestState::Queued) {
-            let placement = place_structure(
-                self.world.as_ref(),
-                &self.template,
-                self.test_x,
-                self.test_z,
-                self.test.definition().padding,
-            )
-            .await;
+        // Move the current state out so state transitions can freely borrow `self`
+        // across async calls without holding a borrow into `self.state`.
+        let state = std::mem::replace(&mut self.state, TestState::Queued);
+        match state {
+            TestState::Queued => self.tick_queued().await,
+            TestState::SettingUp { elapsed_ticks } => self.tick_setup(elapsed_ticks).await,
+            TestState::Running { elapsed_ticks } => self.tick_running(elapsed_ticks).await,
+            finished @ (TestState::Passed { .. } | TestState::Failed { .. }) => {
+                self.state = finished;
+            }
+        }
+    }
 
-            match placement {
-                Ok(placement) => {
-                    self.placement = Some(placement);
-                    if self.test.setup_ticks() == 0 {
-                        match self.begin_running(0).await {
-                            Ok(()) => self.state = TestState::Running { elapsed_ticks: 0 },
-                            Err(error) => self.state = TestState::Failed { tick: 0, error },
-                        }
-                    } else {
-                        self.state = TestState::SettingUp { elapsed_ticks: 0 };
+    async fn tick_queued(&mut self) {
+        let placement = place_structure(
+            self.world.as_ref(),
+            &self.template,
+            self.test.id(),
+            self.test.rotation(),
+            self.test_x,
+            self.test_z,
+            self.test.definition().padding,
+        )
+        .await;
+
+        match placement {
+            Ok(placement) => {
+                self.placement = Some(placement);
+                if self.test.setup_ticks() == 0 {
+                    match self.begin_running(0).await {
+                        Ok(()) => self.state = TestState::Running { elapsed_ticks: 0 },
+                        Err(error) => self.handle_attempt_failure(0, error).await,
                     }
-                }
-                Err(error) => {
-                    self.state = TestState::Failed { tick: 0, error };
+                } else {
+                    self.state = TestState::SettingUp { elapsed_ticks: 0 };
                 }
             }
+            Err(error) => self.handle_attempt_failure(0, error).await,
+        }
+    }
+
+    async fn tick_setup(&mut self, elapsed_ticks: u32) {
+        let elapsed_ticks = elapsed_ticks.saturating_add(1);
+        if elapsed_ticks < self.test.setup_ticks() {
+            self.state = TestState::SettingUp { elapsed_ticks };
             return;
         }
 
-        match &self.state {
-            TestState::SettingUp { elapsed_ticks } => {
-                let elapsed_ticks = elapsed_ticks.saturating_add(1);
-                if elapsed_ticks >= self.test.setup_ticks() {
-                    match self.begin_running(elapsed_ticks).await {
-                        Ok(()) => self.state = TestState::Running { elapsed_ticks: 0 },
-                        Err(error) => {
-                            self.state = TestState::Failed {
-                                tick: elapsed_ticks,
-                                error,
-                            };
-                        }
-                    }
+        match self.begin_running(elapsed_ticks).await {
+            Ok(()) => self.state = TestState::Running { elapsed_ticks: 0 },
+            Err(error) => self.handle_attempt_failure(elapsed_ticks, error).await,
+        }
+    }
+
+    async fn tick_running(&mut self, elapsed_ticks: u32) {
+        let tick = elapsed_ticks.saturating_add(1);
+        match self.evaluate_running(tick).await {
+            Ok(RunningEvaluation::Passed) => self.handle_attempt_pass(tick).await,
+            Ok(RunningEvaluation::Failed(error)) | Err(error) => {
+                self.handle_attempt_failure(tick, error).await;
+            }
+            Ok(RunningEvaluation::Continue) => {
+                // GameTestInfo times out when tickCount > timeoutTicks.
+                if tick > self.test.max_ticks() {
+                    self.handle_attempt_failure(
+                        tick,
+                        GameTestError::Timeout {
+                            max_ticks: self.test.max_ticks(),
+                        },
+                    )
+                    .await;
                 } else {
-                    self.state = TestState::SettingUp { elapsed_ticks };
+                    self.state = TestState::Running {
+                        elapsed_ticks: tick,
+                    };
                 }
             }
-            TestState::Running { elapsed_ticks } => {
-                let tick = elapsed_ticks.saturating_add(1);
-                match self.evaluate_running(tick).await {
-                    Ok(RunningEvaluation::Passed) => {
-                        self.successes = self.successes.saturating_add(1);
-                        self.state = TestState::Passed { tick };
-                    }
-                    Ok(RunningEvaluation::Failed(error)) | Err(error) => {
-                        self.state = TestState::Failed { tick, error };
-                    }
-                    Ok(RunningEvaluation::Continue) => {
-                        if tick >= self.test.max_ticks() {
-                            self.state = TestState::Failed {
-                                tick,
-                                error: GameTestError::Timeout {
-                                    max_ticks: self.test.max_ticks(),
-                                },
-                            };
-                        } else {
-                            self.state = TestState::Running {
-                                elapsed_ticks: tick,
-                            };
-                        }
-                    }
-                }
-            }
-            TestState::Queued | TestState::Passed { .. } | TestState::Failed { .. } => {}
         }
     }
 
@@ -152,13 +158,20 @@ impl TestRun {
             });
         }
 
+        if let Some(placement) = &self.placement {
+            // GameTestInfo.startTest marks the controller RUNNING immediately before
+            // invoking BlockBasedTestInstance.run, which triggers START.
+            self.world
+                .set_test_instance_running(placement.test_instance_pos())
+                .await?;
+        }
         self.world.trigger_test_block(&start_blocks[0]).await
     }
 
     async fn evaluate_running(&self, tick: u32) -> GameTestResult<RunningEvaluation> {
-        // Vanilla's TestBlock.neighborChanged triggers every non-START test block on
-        // a rising redstone edge. Pumpkin's MVP processes those edges here, after
-        // the normal world tick, so command/redstone changes from that tick are visible.
+        // TestBlock.neighborChanged triggers every non-START block on a rising edge.
+        // This executes after Pumpkin's normal world tick, so redstone/command-block
+        // changes from that tick are visible to the GameTest evaluation.
         for position in self.non_start_test_block_positions() {
             self.world.update_test_block_redstone(&position).await?;
         }
@@ -172,8 +185,7 @@ impl TestRun {
             }));
         }
 
-        // BlockBasedTestInstance checks ACCEPT before FAIL, so ACCEPT wins when both
-        // modes are triggered during the same tick.
+        // Vanilla checks ACCEPT before FAIL; ACCEPT wins if both trigger this tick.
         for position in &accept_blocks {
             if self.world.test_block_triggered(position).await? {
                 return Ok(RunningEvaluation::Passed);
@@ -191,8 +203,6 @@ impl TestRun {
             }
         }
 
-        // Vanilla re-triggers LOG blocks so they emit their message, then resets the
-        // runtime-triggered bit so the same pulse is consumed only once.
         for position in self.test_block_positions(TestBlockMode::Log) {
             if self.world.test_block_triggered(&position).await? {
                 self.world.trigger_test_block(&position).await?;
@@ -201,6 +211,95 @@ impl TestRun {
         }
 
         Ok(RunningEvaluation::Continue)
+    }
+
+    async fn handle_attempt_pass(&mut self, tick: u32) {
+        self.successes = self.successes.saturating_add(1);
+        if self.successes >= self.test.required_successes() {
+            if let Some(placement) = &self.placement
+                && let Err(error) = self
+                    .world
+                    .set_test_instance_success(placement.test_instance_pos())
+                    .await
+            {
+                self.state = TestState::Failed { tick, error };
+                return;
+            }
+            self.state = TestState::Passed { tick };
+            return;
+        }
+
+        if self.attempt < self.test.max_attempts() {
+            self.queue_retry();
+            return;
+        }
+
+        let error = GameTestError::ExhaustedAttempts {
+            attempts: self.attempt,
+            successes: self.successes,
+            required_successes: self.test.required_successes(),
+            last_error: "not enough successful attempts".to_string(),
+        };
+        self.finish_failure(tick, error, None).await;
+    }
+
+    async fn handle_attempt_failure(&mut self, tick: u32, error: GameTestError) {
+        let marker = assertion_marker(&error);
+        let remaining_attempts = self.test.max_attempts().saturating_sub(self.attempt);
+        let can_still_reach_required =
+            self.successes.saturating_add(remaining_attempts) >= self.test.required_successes();
+
+        // ReportGameListener retries flaky failures only while the remaining number
+        // of attempts can still reach requiredSuccesses.
+        if self.attempt < self.test.max_attempts() && can_still_reach_required {
+            self.queue_retry();
+            return;
+        }
+
+        let final_error = if self.test.max_attempts() > 1 {
+            GameTestError::ExhaustedAttempts {
+                attempts: self.attempt,
+                successes: self.successes,
+                required_successes: self.test.required_successes(),
+                last_error: error.to_string(),
+            }
+        } else {
+            error
+        };
+        self.finish_failure(tick, final_error, marker).await;
+    }
+
+    fn queue_retry(&mut self) {
+        self.attempt = self.attempt.saturating_add(1);
+        self.placement = None;
+        self.state = TestState::Queued;
+    }
+
+    async fn finish_failure(
+        &mut self,
+        tick: u32,
+        error: GameTestError,
+        marker: Option<(BlockPos, String)>,
+    ) {
+        if let Some(placement) = &self.placement {
+            let message = error.to_string();
+            if let Err(controller_error) = self
+                .world
+                .set_test_instance_failure(
+                    placement.test_instance_pos(),
+                    &message,
+                    marker,
+                )
+                .await
+            {
+                self.state = TestState::Failed {
+                    tick,
+                    error: controller_error,
+                };
+                return;
+            }
+        }
+        self.state = TestState::Failed { tick, error };
     }
 
     fn test_block_positions(&self, mode: TestBlockMode) -> Vec<BlockPos> {
@@ -239,6 +338,17 @@ impl TestRun {
                 ))
             })
             .collect()
+    }
+}
+
+fn assertion_marker(error: &GameTestError) -> Option<(BlockPos, String)> {
+    match error {
+        GameTestError::Assertion {
+            position: Some(position),
+            message,
+            ..
+        } => Some((*position, message.clone())),
+        _ => None,
     }
 }
 
