@@ -8,9 +8,10 @@ use pumpkin_util::math::position::BlockPos;
 
 use crate::block_based::BlockBasedTest;
 use crate::error::{GameTestError, GameTestResult};
+use crate::model::TestRotation;
 use crate::structure::{
-    PlacedStructure, StructureTemplate, TestBlockMode, encase_structure, place_structure,
-    remove_barriers,
+    PlacedStructure, StructureTemplate, TestBlockMode, encase_structure,
+    place_structure_with_controller_rotation, remove_barriers,
 };
 use crate::world::GameTestWorld;
 
@@ -30,6 +31,8 @@ pub struct TestRun {
     pub placement: Option<PlacedStructure>,
     world: Arc<dyn GameTestWorld>,
     template: Arc<StructureTemplate>,
+    extra_rotation: TestRotation,
+    effective_rotation: TestRotation,
     test_x: i32,
     test_y: Option<i32>,
     test_z: i32,
@@ -44,6 +47,26 @@ impl TestRun {
         test_x: i32,
         test_z: i32,
     ) -> Self {
+        Self::new_with_extra_rotation(
+            test,
+            world,
+            template,
+            test_x,
+            test_z,
+            TestRotation::None,
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_extra_rotation(
+        test: BlockBasedTest,
+        world: Arc<dyn GameTestWorld>,
+        template: Arc<StructureTemplate>,
+        test_x: i32,
+        test_z: i32,
+        extra_rotation: TestRotation,
+    ) -> Self {
+        let effective_rotation = test.rotation().then(extra_rotation);
         Self {
             test,
             state: TestState::Queued,
@@ -52,6 +75,8 @@ impl TestRun {
             placement: None,
             world,
             template,
+            extra_rotation,
+            effective_rotation,
             test_x,
             test_y: None,
             test_z,
@@ -86,11 +111,12 @@ impl TestRun {
     }
 
     async fn tick_queued(&mut self) {
-        let placement = place_structure(
+        let placement = place_structure_with_controller_rotation(
             self.world.as_ref(),
             &self.template,
             self.test.id(),
-            self.test.rotation(),
+            self.effective_rotation,
+            self.extra_rotation,
             self.test_x,
             self.test_y,
             self.test_z,
