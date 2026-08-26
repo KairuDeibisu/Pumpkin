@@ -77,12 +77,17 @@ pub async fn place_structure(
     test_id: &str,
     rotation: TestRotation,
     test_x: i32,
+    test_y: Option<i32>,
     test_z: i32,
     padding: i32,
 ) -> GameTestResult<PlacedStructure> {
     // TestInstanceBlockEntity.getStructurePos offsets the controller by padding and
     // then by STRUCTURE_OFFSET. The controller itself is outside the structure box.
-    let test_y = world.surface_height(test_x, test_z).await + 1;
+    // Reruns retain the original controller Y instead of querying a heightmap again.
+    let test_y = match test_y {
+        Some(test_y) => test_y,
+        None => world.surface_height(test_x, test_z).await + 1,
+    };
     let test_instance_pos = BlockPos::new(test_x, test_y, test_z);
     let origin = BlockPos::new(
         test_instance_pos.0.x + padding + STRUCTURE_OFFSET[0],
@@ -130,11 +135,10 @@ pub async fn place_structure(
         | BlockFlags::SKIP_REDSTONE_WIRE_STATE_REPLACEMENT
         | BlockFlags::SKIP_BLOCK_ADDED_CALLBACK;
 
-    let source_size_vec = Vector3::new(source_size[0], source_size[1], source_size[2]);
     for block in template.blocks() {
         let transformed = rotation.as_block_rotation().transform_pos(
             Vector3::new(block.position[0], block.position[1], block.position[2]),
-            source_size_vec,
+            Vector3::new(source_size[0], source_size[1], source_size[2]),
         );
         let position = BlockPos::new(
             origin.0.x + transformed.x,
