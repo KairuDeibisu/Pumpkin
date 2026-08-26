@@ -170,6 +170,54 @@ pub async fn encase_structure(
     placement: &PlacedStructure,
     sky_access: bool,
 ) -> GameTestResult<()> {
+    process_structure_boundary(placement, sky_access, |position| async move {
+        if position == *placement.test_instance_pos() {
+            return Ok(());
+        }
+
+        world
+            .set_block_state(
+                &position,
+                Block::BARRIER.default_state.id,
+                BlockFlags::NOTIFY_ALL,
+            )
+            .await
+    })
+    .await
+}
+
+/// Removes the one-block barrier shell after a successful test, matching
+/// `GameTestRunner` calling `TestInstanceBlockEntity::removeBarriers` in vanilla.
+/// Only barrier blocks are removed so test blocks placed on the boundary are preserved.
+pub async fn remove_barriers(
+    world: &dyn GameTestWorld,
+    placement: &PlacedStructure,
+    sky_access: bool,
+) -> GameTestResult<()> {
+    process_structure_boundary(placement, sky_access, |position| async move {
+        if world.block_state_id(&position).await == Block::BARRIER.default_state.id {
+            world
+                .set_block_state(
+                    &position,
+                    Block::AIR.default_state.id,
+                    BlockFlags::NOTIFY_ALL,
+                )
+                .await?;
+        }
+        Ok(())
+    })
+    .await
+}
+
+async fn process_structure_boundary<F, Fut>(
+    placement: &PlacedStructure,
+    sky_access: bool,
+    mut action: F,
+) -> GameTestResult<()>
+where
+    F: FnMut(BlockPos) -> Fut,
+    Fut: Future<Output = GameTestResult<()>>,
+{
     let origin = placement.origin();
     let size = placement.size();
     let low = BlockPos::new(origin.0.x - 1, origin.0.y - 1, origin.0.z - 1);
@@ -192,20 +240,7 @@ pub async fn encase_structure(
                     continue;
                 }
 
-                let position = BlockPos::new(x, y, z);
-                // With zero padding the controller occupies the north wall. Vanilla
-                // explicitly preserves TEST_INSTANCE_BLOCKs while encasing.
-                if position == *placement.test_instance_pos() {
-                    continue;
-                }
-
-                world
-                    .set_block_state(
-                        &position,
-                        Block::BARRIER.default_state.id,
-                        BlockFlags::NOTIFY_ALL,
-                    )
-                    .await?;
+                action(BlockPos::new(x, y, z)).await?;
             }
         }
     }
