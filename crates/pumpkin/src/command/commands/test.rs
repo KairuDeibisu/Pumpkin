@@ -305,7 +305,8 @@ fn matches_suggestion_substring(pattern: &str, input: &str) -> bool {
     }
 
     input.char_indices().any(|(index, character)| {
-        matches!(character, '.' | '_' | '/') && input[index + character.len_utf8()..].starts_with(pattern)
+        matches!(character, '.' | '_' | '/')
+            && input[index + character.len_utf8()..].starts_with(pattern)
     })
 }
 
