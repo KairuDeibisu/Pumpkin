@@ -13,6 +13,6 @@ pub use model::{TestDefinition, TestRotation, TestType};
 pub use runner::{TestRun, TestRunner, TestState};
 pub use structure::{
     PlacedStructure, StructureBlock, StructureTemplate, TestBlockMode, clear_structure_area,
-    encase_structure, place_structure, remove_barriers,
+    encase_structure, place_structure, place_structure_with_controller_rotation, remove_barriers,
 };
 pub use world::GameTestWorld;
