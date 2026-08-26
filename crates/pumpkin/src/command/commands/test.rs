@@ -1,7 +1,6 @@
-use pumpkin_protocol::java::client::play::{
-    ArgumentType, CommandSuggestion, StringProtoArgBehavior, SuggestionProviders,
-};
+use pumpkin_protocol::java::client::play::{ArgumentType, CommandSuggestion};
 use pumpkin_util::PermissionLvl;
+use pumpkin_util::identifier::Identifier;
 use pumpkin_util::permission::{Permission, PermissionDefault, PermissionRegistry};
 use pumpkin_util::text::TextComponent;
 use tracing::info;
@@ -22,16 +21,15 @@ const DESCRIPTION: &str = "Runs a GameTest test instance.";
 const PERMISSION: &str = "minecraft:command.test";
 const ARG_NAME: &str = "name";
 const TEST_POS_Z_OFFSET_FROM_PLAYER: i32 = 3;
+const TEST_INSTANCE_REGISTRY: Identifier = Identifier::parse_static("minecraft:test_instance");
 
 struct TestInstanceArgumentConsumer;
 
 impl GetClientSideArgParser for TestInstanceArgumentConsumer {
     fn get_client_side_parser(&self) -> ArgumentType {
-        ArgumentType::String(StringProtoArgBehavior::SingleWord)
-    }
-
-    fn get_client_side_suggestion_type_override(&self) -> Option<SuggestionProviders> {
-        Some(SuggestionProviders::AskServer)
+        ArgumentType::ResourceSelector {
+            identifier: TEST_INSTANCE_REGISTRY.clone(),
+        }
     }
 }
 
