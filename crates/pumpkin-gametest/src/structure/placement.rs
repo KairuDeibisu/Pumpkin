@@ -1,4 +1,5 @@
 use pumpkin_data::Block;
+use pumpkin_nbt::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::world::BlockFlags;
 
@@ -10,14 +11,24 @@ const STRUCTURE_OFFSET: [i32; 3] = [0, 1, 1];
 
 #[derive(Clone, Debug)]
 pub struct PlacedStructure {
+    test_instance_pos: BlockPos,
     origin: BlockPos,
     size: [i32; 3],
 }
 
 impl PlacedStructure {
     #[must_use]
-    pub const fn new(origin: BlockPos, size: [i32; 3]) -> Self {
-        Self { origin, size }
+    pub const fn new(test_instance_pos: BlockPos, origin: BlockPos, size: [i32; 3]) -> Self {
+        Self {
+            test_instance_pos,
+            origin,
+            size,
+        }
+    }
+
+    #[must_use]
+    pub const fn test_instance_pos(&self) -> &BlockPos {
+        &self.test_instance_pos
     }
 
     #[must_use]
@@ -47,20 +58,34 @@ pub async fn place_structure(
     test_z: i32,
     padding: i32,
 ) -> GameTestResult<PlacedStructure> {
-    // Pumpkin's heightmap accessor returns the top occupied Y; vanilla's
-    // getHeightmapPos uses the first free Y above it.
+    // Vanilla places the test-instance block at the test anchor, then offsets the
+    // structure by padding + TestInstanceBlockEntity.STRUCTURE_OFFSET (0, 1, 1).
     let test_y = world.surface_height(test_x, test_z).await + 1;
+    let test_instance_pos = BlockPos::new(test_x, test_y, test_z);
     let origin = BlockPos::new(
-        test_x + padding + STRUCTURE_OFFSET[0],
-        test_y + padding + STRUCTURE_OFFSET[1],
-        test_z + padding + STRUCTURE_OFFSET[2],
+        test_instance_pos.0.x + padding + STRUCTURE_OFFSET[0],
+        test_instance_pos.0.y + padding + STRUCTURE_OFFSET[1],
+        test_instance_pos.0.z + padding + STRUCTURE_OFFSET[2],
     );
 
     clear_structure_area(world, &origin, template.size()).await?;
 
-    // StructureTemplate::placeInWorld uses listener updates while suppressing
-    // immediate shape/redstone callbacks. These are Pumpkin's closest matching
-    // flags and keep command/test/redstone blocks inert while the template appears.
+    world
+        .set_block_state(
+            &test_instance_pos,
+            Block::TEST_INSTANCE_BLOCK.default_state.id,
+            BlockFlags::NOTIFY_ALL,
+        )
+        .await?;
+    let mut test_instance_nbt = NbtCompound::new();
+    test_instance_nbt.put_string("id", "minecraft:test_instance_block".to_string());
+    world
+        .set_block_entity_nbt(&test_instance_pos, &test_instance_nbt)
+        .await?;
+
+    // StructureTemplate::placeInWorld places block states and then loads each
+    // StructureBlockInfo's NBT into the resulting block entity. Keep callbacks
+    // suppressed while the template appears, then explicitly restore the saved NBT.
     let place_flags = BlockFlags::NOTIFY_LISTENERS
         | BlockFlags::MOVED
         | BlockFlags::SKIP_REDSTONE_WIRE_STATE_REPLACEMENT
@@ -75,9 +100,17 @@ pub async fn place_structure(
         world
             .set_block_state(&position, block.state, place_flags)
             .await?;
+
+        if let Some(nbt) = &block.nbt {
+            world.set_block_entity_nbt(&position, nbt).await?;
+        }
     }
 
-    Ok(PlacedStructure::new(origin, template.size()))
+    Ok(PlacedStructure::new(
+        test_instance_pos,
+        origin,
+        template.size(),
+    ))
 }
 
 pub async fn clear_structure_area(
