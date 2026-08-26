@@ -82,9 +82,20 @@ impl GameTestBatchReport {
         }
     }
 
+    async fn fail_to_start(&self, error: &GameTestError) {
+        self.sender
+            .send_message(
+                TextComponent::text(error.to_string()).color_named(NamedColor::Red),
+            )
+            .await;
+        self.finish_test(true, 1, 0).await;
+    }
+
     async fn finish_test(&self, required: bool, attempts: u32, successes: u32) {
-        self.total_runs.fetch_add(attempts as usize, Ordering::AcqRel);
-        let failures = attempts.saturating_sub(successes) as usize;
+        let attempts = usize::try_from(attempts).unwrap_or(usize::MAX);
+        let successes = usize::try_from(successes).unwrap_or(usize::MAX);
+        self.total_runs.fetch_add(attempts, Ordering::AcqRel);
+        let failures = attempts.saturating_sub(successes);
         if failures != 0 {
             if required {
                 self.failed_required.fetch_add(failures, Ordering::AcqRel);
@@ -339,6 +350,7 @@ pub(super) async fn drain_game_test_queue(
 
     for request in queued {
         let test_id = request.test_id.clone();
+        let report = request.report.clone();
         match prepare_test_run(server, request).await {
             Ok(run) => {
                 info!(target: "pumpkin::gametest", test = %test_id, "Starting queued GameTest");
@@ -351,6 +363,7 @@ pub(super) async fn drain_game_test_queue(
                     error = %error,
                     "Unable to start queued GameTest"
                 );
+                report.fail_to_start(&error).await;
             }
         }
     }
@@ -360,13 +373,12 @@ async fn prepare_test_run(
     server: &Arc<Server>,
     request: GameTestRequest,
 ) -> GameTestResult<ManagedGameTest> {
-    let mut test_instance = server
+    let test_instance = server
         .datapack_manager
         .get_test_instance(&request.test_id)
         .await
         .ok_or_else(|| GameTestError::World(format!("Unknown test instance '{}'", request.test_id)))?;
 
-    test_instance.rotation = rotate_by_steps(test_instance.rotation, request.rotation_steps);
     let structure = server
         .datapack_manager
         .load_structure(&test_instance.structure)
@@ -377,14 +389,16 @@ async fn prepare_test_run(
     let adapter_world: Arc<dyn GameTestWorld> = Arc::new(ServerGameTestWorld {
         world: request.world.clone(),
     });
+    let extra_rotation = TestRotation::from_steps(request.rotation_steps);
 
     Ok(ManagedGameTest {
-        run: TestRun::new(
+        run: TestRun::new_with_extra_rotation(
             test,
             adapter_world,
             Arc::new(template),
             request.test_x,
             request.test_z,
+            extra_rotation,
         ),
         world: request.world,
         retry_options: request.retry_options,
@@ -394,21 +408,6 @@ async fn prepare_test_run(
         started_at: Instant::now(),
         done: false,
     })
-}
-
-fn rotate_by_steps(rotation: TestRotation, steps: i32) -> TestRotation {
-    let base = match rotation {
-        TestRotation::None => 0,
-        TestRotation::Clockwise90 => 1,
-        TestRotation::Clockwise180 => 2,
-        TestRotation::Counterclockwise90 => 3,
-    };
-    match (base + steps).rem_euclid(4) {
-        0 => TestRotation::None,
-        1 => TestRotation::Clockwise90,
-        2 => TestRotation::Clockwise180,
-        _ => TestRotation::Counterclockwise90,
-    }
 }
 
 async fn broadcast_world(world: &World, message: TextComponent) {
