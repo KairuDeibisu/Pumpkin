@@ -8,8 +8,15 @@ use pumpkin_util::math::position::BlockPos;
 
 use crate::block_based::BlockBasedTest;
 use crate::error::{GameTestError, GameTestResult};
-use crate::structure::{PlacedStructure, StructureTemplate, TestBlockMode, place_structure};
+use crate::structure::{
+    PlacedStructure, StructurePlacement, StructureTemplate, TestBlockMode,
+};
 use crate::world::GameTestWorld;
+
+/// Pumpkin's normal block mutation path includes chunk access, neighbor/update
+/// bookkeeping and client synchronization. Keep GameTest placement bounded so one
+/// queued structure can never monopolize the authoritative server tick.
+const PLACEMENT_WORK_PER_TICK: usize = 64;
 
 enum RunningEvaluation {
     Continue,
@@ -30,6 +37,7 @@ pub struct TestRun {
     test_x: i32,
     test_y: Option<i32>,
     test_z: i32,
+    placement_job: Option<StructurePlacement>,
 }
 
 impl TestRun {
@@ -52,6 +60,7 @@ impl TestRun {
             test_x,
             test_y: None,
             test_z,
+            placement_job: None,
         }
     }
 
@@ -74,21 +83,47 @@ impl TestRun {
     }
 
     async fn tick_queued(&mut self) {
-        let placement = place_structure(
-            self.world.as_ref(),
-            &self.template,
-            self.test.id(),
-            self.test.rotation(),
-            self.test_x,
-            self.test_y,
-            self.test_z,
-            self.test.definition().padding,
-        )
-        .await;
+        if self.placement_job.is_none() {
+            let job = StructurePlacement::new(
+                self.world.as_ref(),
+                &self.template,
+                self.test.id(),
+                self.test.rotation(),
+                self.test_x,
+                self.test_y,
+                self.test_z,
+                self.test.definition().padding,
+            )
+            .await;
+
+            match job {
+                Ok(job) => {
+                    // Pin the resolved height immediately. Retries must reuse the same
+                    // controller position rather than querying a now-modified heightmap.
+                    self.test_y = Some(job.test_instance_pos().0.y);
+                    self.placement_job = Some(job);
+                }
+                Err(error) => {
+                    self.handle_attempt_failure(0, error).await;
+                    return;
+                }
+            }
+        }
+
+        let placement = self
+            .placement_job
+            .as_mut()
+            .expect("placement job was initialized above")
+            .advance(
+                self.world.as_ref(),
+                &self.template,
+                PLACEMENT_WORK_PER_TICK,
+            )
+            .await;
 
         match placement {
-            Ok(placement) => {
-                self.test_y = Some(placement.test_instance_pos().0.y);
+            Ok(Some(placement)) => {
+                self.placement_job = None;
                 self.placement = Some(placement);
                 if self.test.setup_ticks() == 0 {
                     match self.begin_running(0).await {
@@ -99,7 +134,15 @@ impl TestRun {
                     self.state = TestState::SettingUp { elapsed_ticks: 0 };
                 }
             }
-            Err(error) => self.handle_attempt_failure(0, error).await,
+            Ok(None) => {
+                // Placement is intentionally incomplete. Remaining queued means the
+                // next normal server tick advances another bounded slice.
+                self.state = TestState::Queued;
+            }
+            Err(error) => {
+                self.placement_job = None;
+                self.handle_attempt_failure(0, error).await;
+            }
         }
     }
 
@@ -276,6 +319,7 @@ impl TestRun {
     fn queue_retry(&mut self) {
         self.attempt = self.attempt.saturating_add(1);
         self.placement = None;
+        self.placement_job = None;
         self.state = TestState::Queued;
     }
 
