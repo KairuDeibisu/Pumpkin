@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use pumpkin_data::BlockStateId;
+use pumpkin_data::{BlockState, BlockStateId};
 use pumpkin_gametest::{
-    BlockBasedTest, GameTestError, GameTestResult, GameTestWorld, StructureTemplate, TestRun,
+    BlockBasedTest, GameTestError, GameTestResult, GameTestWorld, StructureTemplate, TestRotation,
+    TestRun,
 };
 use pumpkin_nbt::NbtCompound;
 use pumpkin_protocol::java::client::play::{
@@ -19,8 +20,9 @@ use tracing::info;
 
 use crate::block::blocks::redstone::block_receives_redstone_power;
 use crate::block::entities::{
-    block_entity_from_nbt,
+    BlockEntity, block_entity_from_nbt,
     test_block::{TestBlockBlockEntity, TestBlockMode as PumpkinTestBlockMode},
+    test_instance_block::TestInstanceBlockBlockEntity,
 };
 use crate::command::args::{
     Arg, ArgumentConsumer, ConsumeResult, ConsumedArgs, FindArg, GetClientSideArgParser,
@@ -107,6 +109,26 @@ impl CommandGameTestWorld {
             GameTestError::World(format!("Block entity at {position} is not a test block"))
         })
     }
+
+    fn test_instance_block_entity(
+        &self,
+        position: &BlockPos,
+    ) -> GameTestResult<Arc<TestInstanceBlockBlockEntity>> {
+        let entity = self.world.get_block_entity(position).ok_or_else(|| {
+            GameTestError::World(format!("Missing test instance block entity at {position}"))
+        })?;
+
+        Arc::downcast::<TestInstanceBlockBlockEntity>(entity).map_err(|_| {
+            GameTestError::World(format!(
+                "Block entity at {position} is not a test instance block"
+            ))
+        })
+    }
+
+    fn sync_block_entity<T: BlockEntity + 'static>(&self, entity: Arc<T>) {
+        let entity: Arc<dyn BlockEntity> = entity;
+        self.world.update_block_entity(&entity);
+    }
 }
 
 #[async_trait]
@@ -125,6 +147,19 @@ impl GameTestWorld for CommandGameTestWorld {
             .set_block_state(position, block_state_id, flags)
             .await;
         Ok(())
+    }
+
+    async fn rotate_block_state(
+        &self,
+        block_state_id: BlockStateId,
+        rotation: TestRotation,
+    ) -> GameTestResult<BlockStateId> {
+        let (block, _) = BlockState::from_id_with_block(block_state_id);
+        Ok(self
+            .world
+            .block_registry
+            .rotate(block, block_state_id, rotation.as_block_rotation())
+            .id)
     }
 
     async fn set_block_entity_nbt(
@@ -150,6 +185,38 @@ impl GameTestWorld for CommandGameTestWorld {
         self.world.remove_block_entity(position);
         self.world.add_block_entity(entity.clone());
         self.world.update_block_entity(&entity);
+        Ok(())
+    }
+
+    async fn set_test_instance_running(&self, position: &BlockPos) -> GameTestResult<()> {
+        let entity = self.test_instance_block_entity(position)?;
+        entity.clear_error_markers().await;
+        entity.set_running().await;
+        self.sync_block_entity(entity);
+        Ok(())
+    }
+
+    async fn set_test_instance_success(&self, position: &BlockPos) -> GameTestResult<()> {
+        let entity = self.test_instance_block_entity(position)?;
+        entity.clear_error_markers().await;
+        entity.set_success().await;
+        self.sync_block_entity(entity);
+        Ok(())
+    }
+
+    async fn set_test_instance_failure(
+        &self,
+        position: &BlockPos,
+        message: &str,
+        marker: Option<(BlockPos, String)>,
+    ) -> GameTestResult<()> {
+        let entity = self.test_instance_block_entity(position)?;
+        entity.clear_error_markers().await;
+        if let Some((marker_position, marker_text)) = marker {
+            entity.mark_error(marker_position, marker_text).await;
+        }
+        entity.set_error_message(message.to_string()).await;
+        self.sync_block_entity(entity);
         Ok(())
     }
 
