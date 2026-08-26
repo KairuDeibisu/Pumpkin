@@ -1,7 +1,7 @@
 mod gametest;
 
 pub use gametest::{
-    GameTestBatchReport, GameTestRequest, GameTestRetryOptions, enqueue_game_test,
+    GameTestBatchReport, GameTestRequest, GameTestRetryOptions, enqueue_game_test, stop_game_tests,
 };
 
 use crate::{
