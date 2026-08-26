@@ -130,6 +130,24 @@ pub async fn place_structure_with_controller_rotation(
         .transform_size(Vector3::new(source_size[0], source_size[1], source_size[2]));
     let size = [rotated_size.x, rotated_size.y, rotated_size.z];
 
+    // Vanilla TestInstanceBlockEntity::placeStructure clears non-player entities
+    // from getTestBounds() before placing a fresh attempt. This is particularly
+    // important for retries: mobs spawned by the previous attempt must not survive
+    // into the next one and keep ticking against the replacement structure.
+    let test_min = BlockPos::new(
+        origin.0.x - padding,
+        origin.0.y - padding,
+        origin.0.z - padding,
+    );
+    let test_max = BlockPos::new(
+        origin.0.x + size[0] + padding,
+        origin.0.y + size[1] + padding,
+        origin.0.z + size[2] + padding,
+    );
+    world
+        .clear_non_player_entities(&test_min, &test_max)
+        .await?;
+
     clear_test_area(world, &origin, size, padding).await?;
 
     world
@@ -239,6 +257,23 @@ pub async fn remove_barriers(
         Ok(())
     })
     .await
+}
+
+/// Vanilla `GameTestInfo::succeed` discards non-player entities inside the
+/// structure bounds inflated by one block before listeners schedule any reruns.
+pub async fn clear_success_entities(
+    world: &dyn GameTestWorld,
+    placement: &PlacedStructure,
+) -> GameTestResult<()> {
+    let origin = placement.origin();
+    let size = placement.size();
+    let min = BlockPos::new(origin.0.x - 1, origin.0.y - 1, origin.0.z - 1);
+    let max = BlockPos::new(
+        origin.0.x + size[0] + 1,
+        origin.0.y + size[1] + 1,
+        origin.0.z + size[2] + 1,
+    );
+    world.clear_non_player_entities(&min, &max).await
 }
 
 async fn process_structure_boundary<F, Fut>(
