@@ -13,13 +13,9 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::{
-    block::{
-        blocks::redstone::block_receives_redstone_power,
-        entities::{
-            BlockEntity, block_entity_from_nbt,
-            test_block::{TestBlockBlockEntity, TestBlockMode as PumpkinTestBlockMode},
-            test_instance_block::TestInstanceBlockBlockEntity,
-        },
+    block::entities::{
+        BlockEntity, block_entity_from_nbt, test_block::TestBlockBlockEntity,
+        test_instance_block::TestInstanceBlockBlockEntity,
     },
     server::Server,
     world::World,
@@ -230,24 +226,6 @@ impl GameTestWorld for ServerGameTestWorld {
         }
         entity.set_error_message(message.to_string()).await;
         self.sync_block_entity(entity);
-        Ok(())
-    }
-
-    async fn update_test_block_redstone(&self, position: &BlockPos) -> GameTestResult<()> {
-        let entity = self.test_block_entity(position)?;
-        if entity.mode().await == PumpkinTestBlockMode::Start {
-            return Ok(());
-        }
-
-        let should_trigger = block_receives_redstone_power(&self.world, position).await;
-        let is_powered = entity.is_powered();
-        if should_trigger && !is_powered {
-            entity.set_powered(true);
-            entity.trigger(&self.world).await;
-        } else if !should_trigger && is_powered {
-            entity.set_powered(false);
-        }
-
         Ok(())
     }
 
