@@ -13,15 +13,22 @@ use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep_until};
 use tracing::debug;
 
-static GAME_TEST_RUNNER: LazyLock<Mutex<TestRunner>> =
-    LazyLock::new(|| Mutex::new(TestRunner::new()));
+static GAME_TEST_QUEUE: LazyLock<Mutex<Vec<TestRun>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 pub async fn enqueue_game_test(run: TestRun) {
-    GAME_TEST_RUNNER.lock().await.enqueue(run);
+    GAME_TEST_QUEUE.lock().await.push(run);
 }
 
-async fn tick_game_tests() {
-    GAME_TEST_RUNNER.lock().await.tick().await;
+async fn drain_game_test_queue(runner: &mut TestRunner) {
+    let queued = {
+        let mut queue = GAME_TEST_QUEUE.lock().await;
+        std::mem::take(&mut *queue)
+    };
+
+    for run in queued {
+        runner.enqueue(run);
+    }
 }
 
 pub struct Ticker;
@@ -30,6 +37,7 @@ impl Ticker {
     /// IMPORTANT: Run this in a new thread/tokio task.
     pub async fn run(server: &Arc<Server>) {
         let mut next_tick = Instant::now();
+        let mut game_test_runner = TestRunner::new();
 
         'ticker: loop {
             let tick_start_time = std::time::Instant::now();
@@ -57,7 +65,8 @@ impl Ticker {
             }
 
             if should_tick_game_tests {
-                tick_game_tests().await;
+                drain_game_test_queue(&mut game_test_runner).await;
+                game_test_runner.tick().await;
             }
 
             let tick_duration_nanos = tick_start_time.elapsed().as_nanos() as i64;
