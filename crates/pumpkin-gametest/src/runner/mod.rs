@@ -10,7 +10,7 @@ use crate::block_based::BlockBasedTest;
 use crate::error::{GameTestError, GameTestResult};
 use crate::model::TestRotation;
 use crate::structure::{
-    PlacedStructure, StructureTemplate, TestBlockMode, encase_structure,
+    PlacedStructure, StructureTemplate, TestBlockMode, clear_success_entities, encase_structure,
     place_structure_with_controller_rotation, remove_barriers,
 };
 use crate::world::GameTestWorld;
@@ -24,10 +24,6 @@ enum RunningEvaluation {
 pub struct TestRun {
     pub test: BlockBasedTest,
     pub state: TestState,
-    /// Current 1-based attempt number. Vanilla increments attempts when the
-    /// structure is loaded for an attempt.
-    pub attempt: u32,
-    pub successes: u32,
     pub placement: Option<PlacedStructure>,
     world: Arc<dyn GameTestWorld>,
     template: Arc<StructureTemplate>,
@@ -70,8 +66,6 @@ impl TestRun {
         Self {
             test,
             state: TestState::Queued,
-            attempt: 1,
-            successes: 0,
             placement: None,
             world,
             template,
@@ -83,13 +77,25 @@ impl TestRun {
         }
     }
 
-    /// Resets a completed test for a command-level rerun while retaining the
-    /// original controller Y. This is separate from datapack flaky-test attempts.
-    pub fn reset_for_rerun(&mut self) {
-        self.state = TestState::Queued;
-        self.attempt = 1;
-        self.successes = 0;
-        self.placement = None;
+    /// Creates the equivalent of vanilla `GameTestInfo::copyReset()`.
+    ///
+    /// A rerun is a new execution object, not a finished run mutated back to Queued.
+    /// The controller coordinates and resolved Y are retained so the replacement is
+    /// prepared in place, while all per-attempt state and placement handles are fresh.
+    #[must_use]
+    pub fn copy_reset(&self) -> Self {
+        Self {
+            test: self.test.clone(),
+            state: TestState::Queued,
+            placement: None,
+            world: self.world.clone(),
+            template: self.template.clone(),
+            extra_rotation: self.extra_rotation,
+            effective_rotation: self.effective_rotation,
+            test_x: self.test_x,
+            test_y: self.test_y,
+            test_z: self.test_z,
+        }
     }
 
     pub async fn tick(&mut self) {
@@ -133,7 +139,7 @@ impl TestRun {
                 )
                 .await
                 {
-                    self.handle_attempt_failure(0, error).await;
+                    self.finish_failure(0, error, None).await;
                     return;
                 }
 
@@ -142,13 +148,13 @@ impl TestRun {
                 if self.test.setup_ticks() == 0 {
                     match self.begin_running(0).await {
                         Ok(()) => self.state = TestState::Running { elapsed_ticks: 0 },
-                        Err(error) => self.handle_attempt_failure(0, error).await,
+                        Err(error) => self.finish_failure(0, error, None).await,
                     }
                 } else {
                     self.state = TestState::SettingUp { elapsed_ticks: 0 };
                 }
             }
-            Err(error) => self.handle_attempt_failure(0, error).await,
+            Err(error) => self.finish_failure(0, error, None).await,
         }
     }
 
@@ -161,7 +167,7 @@ impl TestRun {
 
         match self.begin_running(elapsed_ticks).await {
             Ok(()) => self.state = TestState::Running { elapsed_ticks: 0 },
-            Err(error) => self.handle_attempt_failure(elapsed_ticks, error).await,
+            Err(error) => self.finish_failure(elapsed_ticks, error, None).await,
         }
     }
 
@@ -170,16 +176,18 @@ impl TestRun {
         match self.evaluate_running(tick).await {
             Ok(RunningEvaluation::Passed) => self.handle_attempt_pass(tick).await,
             Ok(RunningEvaluation::Failed(error)) | Err(error) => {
-                self.handle_attempt_failure(tick, error).await;
+                let marker = assertion_marker(&error);
+                self.finish_failure(tick, error, marker).await;
             }
             Ok(RunningEvaluation::Continue) => {
                 // GameTestInfo times out when tickCount > timeoutTicks.
                 if tick > self.test.max_ticks() {
-                    self.handle_attempt_failure(
+                    self.finish_failure(
                         tick,
                         GameTestError::Timeout {
                             max_ticks: self.test.max_ticks(),
                         },
+                        None,
                     )
                     .await;
                 } else {
@@ -260,79 +268,37 @@ impl TestRun {
     }
 
     async fn handle_attempt_pass(&mut self, tick: u32) {
-        self.successes = self.successes.saturating_add(1);
-        if self.successes >= self.test.required_successes() {
-            if let Some(placement) = &self.placement {
-                if let Err(error) = self
-                    .world
-                    .set_test_instance_success(placement.test_instance_pos())
-                    .await
-                {
-                    self.state = TestState::Failed { tick, error };
-                    return;
-                }
+        if let Some(placement) = &self.placement {
+            // GameTestInfo::succeed removes non-player entities before the listeners
+            // report success or schedule a copyReset rerun.
+            if let Err(error) = clear_success_entities(self.world.as_ref(), placement).await {
+                self.state = TestState::Failed { tick, error };
+                return;
+            }
 
-                // Vanilla GameTestRunner removes the test-instance barrier shell on
-                // pass but leaves it in place on failure.
-                if let Err(error) = remove_barriers(
-                    self.world.as_ref(),
-                    placement,
-                    self.test.definition().sky_access,
-                )
+            if let Err(error) = self
+                .world
+                .set_test_instance_success(placement.test_instance_pos())
                 .await
-                {
-                    self.state = TestState::Failed { tick, error };
-                    return;
-                }
+            {
+                self.state = TestState::Failed { tick, error };
+                return;
             }
-            self.state = TestState::Passed { tick };
-            return;
-        }
 
-        if self.attempt < self.test.max_attempts() {
-            self.queue_retry();
-            return;
-        }
-
-        let error = GameTestError::ExhaustedAttempts {
-            attempts: self.attempt,
-            successes: self.successes,
-            required_successes: self.test.required_successes(),
-            last_error: "not enough successful attempts".to_string(),
-        };
-        self.finish_failure(tick, error, None).await;
-    }
-
-    async fn handle_attempt_failure(&mut self, tick: u32, error: GameTestError) {
-        let marker = assertion_marker(&error);
-        let remaining_attempts = self.test.max_attempts().saturating_sub(self.attempt);
-        let can_still_reach_required =
-            self.successes.saturating_add(remaining_attempts) >= self.test.required_successes();
-
-        // ReportGameListener retries flaky failures only while the remaining number
-        // of attempts can still reach requiredSuccesses.
-        if self.attempt < self.test.max_attempts() && can_still_reach_required {
-            self.queue_retry();
-            return;
-        }
-
-        let final_error = if self.test.max_attempts() > 1 {
-            GameTestError::ExhaustedAttempts {
-                attempts: self.attempt,
-                successes: self.successes,
-                required_successes: self.test.required_successes(),
-                last_error: error.to_string(),
+            // GameTestRunner's batch listener removes the test-instance barrier shell
+            // on every passed execution, including executions that will be rerun.
+            if let Err(error) = remove_barriers(
+                self.world.as_ref(),
+                placement,
+                self.test.definition().sky_access,
+            )
+            .await
+            {
+                self.state = TestState::Failed { tick, error };
+                return;
             }
-        } else {
-            error
-        };
-        self.finish_failure(tick, final_error, marker).await;
-    }
-
-    fn queue_retry(&mut self) {
-        self.attempt = self.attempt.saturating_add(1);
-        self.placement = None;
-        self.state = TestState::Queued;
+        }
+        self.state = TestState::Passed { tick };
     }
 
     async fn finish_failure(
