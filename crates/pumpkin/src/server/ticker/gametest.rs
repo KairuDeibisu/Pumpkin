@@ -198,7 +198,11 @@ pub async fn enqueue_game_test(request: GameTestRequest) {
 }
 
 pub async fn stop_game_tests() {
-    GAME_TEST_QUEUE.lock().await.clear();
+    // Keep the queue mutex held while publishing the stop request. drain_game_test_queue
+    // takes the same mutex before consuming STOP_GAME_TESTS, so a stop+new-run command
+    // cannot race between the runner-clear and queue-drain phases.
+    let mut queue = GAME_TEST_QUEUE.lock().await;
+    queue.clear();
     STOP_GAME_TESTS.store(true, Ordering::Release);
 }
 
@@ -327,7 +331,8 @@ impl ManagedGameTest {
                 true
             }
         } else if !is_flaky {
-            self.report_failure(error.map(ToString::to_string).as_deref()).await;
+            let error_message = error.map(ToString::to_string);
+            self.report_failure(error_message.as_deref()).await;
             if self.retry_options.has_retries() {
                 broadcast_world(
                     &self.world,
@@ -377,7 +382,8 @@ impl ManagedGameTest {
                     required_successes,
                     last_error,
                 };
-                self.report_failure(Some(&exhausted.to_string())).await;
+                let exhausted_message = exhausted.to_string();
+                self.report_failure(Some(&exhausted_message)).await;
                 false
             }
         };
@@ -454,12 +460,12 @@ pub(super) async fn drain_game_test_queue(
     server: &Arc<Server>,
     runner: &mut ServerGameTestRunner,
 ) {
-    // Apply stop before draining so a new /test run issued after /test stop survives,
-    // while the tests that were active when stop was requested are discarded.
-    runner.apply_stop_request();
-
+    // Hold the same queue mutex used by stop_game_tests while consuming the stop
+    // flag and draining requests. This closes the async race where a new /test run
+    // could otherwise be drained before the old runner was cleared.
     let queued = {
         let mut queue = GAME_TEST_QUEUE.lock().await;
+        runner.apply_stop_request();
         std::mem::take(&mut *queue)
     };
 
