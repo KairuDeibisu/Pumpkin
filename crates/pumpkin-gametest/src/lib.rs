@@ -12,6 +12,7 @@ pub use helper::GameTestHelper;
 pub use model::{TestDefinition, TestRotation, TestType};
 pub use runner::{TestRun, TestRunner, TestState};
 pub use structure::{
-    PlacedStructure, StructureBlock, StructureTemplate, clear_structure_area, place_structure,
+    PlacedStructure, StructureBlock, StructureTemplate, TestBlockMode, clear_structure_area,
+    place_structure,
 };
 pub use world::GameTestWorld;
