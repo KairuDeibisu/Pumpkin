@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
@@ -27,6 +27,7 @@ use crate::{
 
 static GAME_TEST_QUEUE: LazyLock<Mutex<Vec<GameTestRequest>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+static STOP_GAME_TESTS: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug)]
 pub struct GameTestRetryOptions {
@@ -84,9 +85,7 @@ impl GameTestBatchReport {
 
     async fn fail_to_start(&self, error: &GameTestError) {
         self.sender
-            .send_message(
-                TextComponent::text(error.to_string()).color_named(NamedColor::Red),
-            )
+            .send_message(TextComponent::text(error.to_string()).color_named(NamedColor::Red))
             .await;
         self.finish_test(true, 1, 0).await;
     }
@@ -197,6 +196,11 @@ pub async fn enqueue_game_test(request: GameTestRequest) {
     GAME_TEST_QUEUE.lock().await.push(request);
 }
 
+pub async fn stop_game_tests() {
+    GAME_TEST_QUEUE.lock().await.clear();
+    STOP_GAME_TESTS.store(true, Ordering::Release);
+}
+
 pub(super) struct ServerGameTestRunner {
     active: Vec<ManagedGameTest>,
 }
@@ -212,6 +216,11 @@ impl ServerGameTestRunner {
     }
 
     pub async fn tick(&mut self) {
+        if STOP_GAME_TESTS.swap(false, Ordering::AcqRel) {
+            self.active.clear();
+            return;
+        }
+
         for managed in &mut self.active {
             if managed.done {
                 continue;
