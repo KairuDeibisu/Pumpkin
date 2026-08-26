@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use pumpkin_protocol::java::client::play::{
-    ArgumentType, CommandSuggestion, StringProtoArgBehavior, SuggestionProviders,
-};
+use pumpkin_protocol::java::client::play::{ArgumentType, CommandSuggestion, SuggestionProviders};
 use pumpkin_util::PermissionLvl;
 use pumpkin_util::identifier::Identifier;
 use pumpkin_util::permission::{Permission, PermissionDefault, PermissionRegistry};
@@ -41,12 +39,11 @@ struct TestInstanceArgumentConsumer;
 
 impl GetClientSideArgParser for TestInstanceArgumentConsumer {
     fn get_client_side_parser(&self) -> ArgumentType {
-        // Vanilla uses ResourceSelectorArgument(TEST_INSTANCE), but Pumpkin's dynamic
-        // test-instance registry is datapack-backed rather than part of the generated
-        // command registry table. Some clients therefore reject an otherwise valid test
-        // before they ever ask the server for completions. A single-word parser preserves
-        // vanilla selector syntax (* and ?) while leaving authoritative validation here.
-        ArgumentType::String(StringProtoArgBehavior::SingleWord)
+        // Pumpkin currently supplies these completions through ask_server. Use the
+        // resource-location parser client-side so namespaced IDs such as
+        // `pumpkin:creeper_should_run_from_cat` parse as one argument without making
+        // the client validate them against its local dynamic registry snapshot.
+        ArgumentType::ResourceLocation
     }
 
     fn get_client_side_suggestion_type_override(&self) -> Option<SuggestionProviders> {
