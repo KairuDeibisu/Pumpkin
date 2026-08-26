@@ -71,7 +71,7 @@ impl<'a> GameTestHelper<'a> {
         Err(GameTestError::Assertion {
             tick: self.tick,
             position: Some(position),
-            message: format!("expected block state {expected}, found {actual}"),
+            message: format!("expected block state {expected:?}, found {actual:?}"),
         })
     }
 }
