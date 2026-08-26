@@ -5,7 +5,6 @@
 use pumpkin_data::{Block, BlockDirection, BlockState};
 use pumpkin_util::math::position::BlockPos;
 
-use crate::block::entities::test_block::{TestBlockBlockEntity, TestBlockMode};
 use crate::world::World;
 
 pub mod bell;
@@ -123,21 +122,6 @@ async fn get_weak_power(
     side: BlockDirection,
     dust_power: bool,
 ) -> u8 {
-    // Vanilla TestBlock.ownSignal only emits from START-mode blocks while their
-    // block entity is powered. The GameTest runner owns the trigger lifecycle,
-    // but the ordinary redstone engine must see the START pulse so adjacent
-    // command/redstone blocks react through their normal Pumpkin behaviours.
-    if block == &Block::TEST_BLOCK {
-        if let Some(entity) = world.get_block_entity(pos)
-            && let Some(test_block) = entity.as_any().downcast_ref::<TestBlockBlockEntity>()
-            && test_block.mode().await == TestBlockMode::Start
-            && test_block.is_powered()
-        {
-            return 15;
-        }
-        return 0;
-    }
-
     if !dust_power && block == &Block::REDSTONE_WIRE {
         return 0;
     }
