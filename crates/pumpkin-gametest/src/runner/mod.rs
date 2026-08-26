@@ -10,6 +10,7 @@ use crate::block_based::BlockBasedTest;
 use crate::error::{GameTestError, GameTestResult};
 use crate::structure::{
     PlacedStructure, StructureTemplate, TestBlockMode, encase_structure, place_structure,
+    remove_barriers,
 };
 use crate::world::GameTestWorld;
 
@@ -55,6 +56,15 @@ impl TestRun {
             test_y: None,
             test_z,
         }
+    }
+
+    /// Resets a completed test for a command-level rerun while retaining the
+    /// original controller Y. This is separate from datapack flaky-test attempts.
+    pub fn reset_for_rerun(&mut self) {
+        self.state = TestState::Queued;
+        self.attempt = 1;
+        self.successes = 0;
+        self.placement = None;
     }
 
     pub async fn tick(&mut self) {
@@ -226,14 +236,28 @@ impl TestRun {
     async fn handle_attempt_pass(&mut self, tick: u32) {
         self.successes = self.successes.saturating_add(1);
         if self.successes >= self.test.required_successes() {
-            if let Some(placement) = &self.placement
-                && let Err(error) = self
+            if let Some(placement) = &self.placement {
+                if let Err(error) = self
                     .world
                     .set_test_instance_success(placement.test_instance_pos())
                     .await
-            {
-                self.state = TestState::Failed { tick, error };
-                return;
+                {
+                    self.state = TestState::Failed { tick, error };
+                    return;
+                }
+
+                // Vanilla GameTestRunner removes the test-instance barrier shell on
+                // pass but leaves it in place on failure.
+                if let Err(error) = remove_barriers(
+                    self.world.as_ref(),
+                    placement,
+                    self.test.definition().sky_access,
+                )
+                .await
+                {
+                    self.state = TestState::Failed { tick, error };
+                    return;
+                }
             }
             self.state = TestState::Passed { tick };
             return;
