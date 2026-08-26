@@ -30,6 +30,16 @@ pub trait GameTestWorld: Send + Sync {
         nbt: &NbtCompound,
     ) -> GameTestResult<()>;
 
+    /// Removes all non-player entities intersecting the half-open world-space box
+    /// `[min, max)`. Vanilla does this before every GameTest structure placement,
+    /// and again around a successful structure, so reruns never inherit entities
+    /// spawned by the previous attempt.
+    async fn clear_non_player_entities(
+        &self,
+        min: &BlockPos,
+        max: &BlockPos,
+    ) -> GameTestResult<()>;
+
     async fn set_test_instance_running(&self, position: &BlockPos) -> GameTestResult<()>;
 
     async fn set_test_instance_success(&self, position: &BlockPos) -> GameTestResult<()>;
