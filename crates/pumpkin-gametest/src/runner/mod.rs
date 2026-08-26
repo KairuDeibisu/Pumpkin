@@ -173,13 +173,6 @@ impl TestRun {
     }
 
     async fn evaluate_running(&self, tick: u32) -> GameTestResult<RunningEvaluation> {
-        // Temporary bridge until TestBlock is fully registered in Pumpkin's block
-        // registry. Runtime evaluation should eventually only inspect triggered state;
-        // rising-edge redstone belongs to the block behaviour itself.
-        for position in self.non_start_test_block_positions() {
-            self.world.update_test_block_redstone(&position).await?;
-        }
-
         let accept_blocks = self.test_block_positions(TestBlockMode::Accept);
         if accept_blocks.is_empty() {
             return Ok(RunningEvaluation::Failed(GameTestError::Assertion {
@@ -315,25 +308,6 @@ impl TestRun {
             .blocks()
             .iter()
             .filter(|block| block.test_mode == Some(mode))
-            .map(|block| {
-                placement.transform(&BlockPos::new(
-                    block.position[0],
-                    block.position[1],
-                    block.position[2],
-                ))
-            })
-            .collect()
-    }
-
-    fn non_start_test_block_positions(&self) -> Vec<BlockPos> {
-        let Some(placement) = &self.placement else {
-            return Vec::new();
-        };
-
-        self.template
-            .blocks()
-            .iter()
-            .filter(|block| block.test_mode.is_some_and(|mode| mode != TestBlockMode::Start))
             .map(|block| {
                 placement.transform(&BlockPos::new(
                     block.position[0],
