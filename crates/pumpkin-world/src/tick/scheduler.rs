@@ -108,8 +108,9 @@ impl<'a, T: std::hash::Hash + Eq> ChunkTickScheduler<&'a T> {
         inner
             .queued_ticks
             .retain(|(position, _)| !contains(position));
+        let became_empty = inner.queued_ticks.is_empty();
 
-        if inner.queued_ticks.is_empty() {
+        if became_empty {
             *inner_guard = None;
         }
     }
