@@ -1,4 +1,4 @@
-use pumpkin_protocol::java::client::play::{ArgumentType, CommandSuggestion};
+use pumpkin_protocol::java::client::play::{ArgumentType, SuggestionProviders};
 use pumpkin_util::PermissionLvl;
 use pumpkin_util::identifier::Identifier;
 use pumpkin_util::permission::{Permission, PermissionDefault, PermissionRegistry};
@@ -7,7 +7,6 @@ use tracing::info;
 
 use crate::command::args::{
     Arg, ArgumentConsumer, ConsumeResult, ConsumedArgs, FindArg, GetClientSideArgParser,
-    SuggestResult,
 };
 use crate::command::node::dispatcher::CommandDispatcher as LegacyCommandDispatcher;
 use crate::command::tree::builder::{argument, literal};
@@ -31,6 +30,10 @@ impl GetClientSideArgParser for TestInstanceArgumentConsumer {
             identifier: TEST_INSTANCE_REGISTRY.clone(),
         }
     }
+
+    fn get_client_side_suggestion_type_override(&self) -> Option<SuggestionProviders> {
+        None
+    }
 }
 
 impl ArgumentConsumer for TestInstanceArgumentConsumer {
@@ -42,24 +45,6 @@ impl ArgumentConsumer for TestInstanceArgumentConsumer {
     ) -> ConsumeResult<'a> {
         let value = args.pop().map(|arg| arg.value);
         Box::pin(async move { value.map(Arg::Simple) })
-    }
-
-    fn suggest<'a>(
-        &'a self,
-        _sender: &CommandSender,
-        server: &'a Server,
-        _input: &'a str,
-    ) -> SuggestResult<'a> {
-        Box::pin(async move {
-            let suggestions = server
-                .datapack_manager
-                .get_test_instance_names()
-                .await
-                .into_iter()
-                .map(|name| CommandSuggestion::new(name, None))
-                .collect();
-            Ok(Some(suggestions))
-        })
     }
 }
 
