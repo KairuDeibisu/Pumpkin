@@ -28,6 +28,7 @@ pub struct TestRun {
     world: Arc<dyn GameTestWorld>,
     template: Arc<StructureTemplate>,
     test_x: i32,
+    test_y: Option<i32>,
     test_z: i32,
 }
 
@@ -49,6 +50,7 @@ impl TestRun {
             world,
             template,
             test_x,
+            test_y: None,
             test_z,
         }
     }
@@ -78,6 +80,7 @@ impl TestRun {
             self.test.id(),
             self.test.rotation(),
             self.test_x,
+            self.test_y,
             self.test_z,
             self.test.definition().padding,
         )
@@ -85,6 +88,7 @@ impl TestRun {
 
         match placement {
             Ok(placement) => {
+                self.test_y = Some(placement.test_instance_pos().0.y);
                 self.placement = Some(placement);
                 if self.test.setup_ticks() == 0 {
                     match self.begin_running(0).await {
