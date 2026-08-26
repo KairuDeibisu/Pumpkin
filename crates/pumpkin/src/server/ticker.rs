@@ -1,6 +1,8 @@
 mod gametest;
 
-pub use gametest::{GameTestRequest, enqueue_game_test};
+pub use gametest::{
+    GameTestBatchReport, GameTestRequest, GameTestRetryOptions, enqueue_game_test,
+};
 
 use crate::{
     STOP_INTERRUPT,
@@ -9,8 +11,7 @@ use crate::{
     },
     server::Server,
 };
-use gametest::drain_game_test_queue;
-use pumpkin_gametest::TestRunner;
+use gametest::{ServerGameTestRunner, drain_game_test_queue};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -23,7 +24,7 @@ impl Ticker {
     /// IMPORTANT: Run this in a new thread/tokio task.
     pub async fn run(server: &Arc<Server>) {
         let mut next_tick = Instant::now();
-        let mut game_test_runner = TestRunner::new();
+        let mut game_test_runner = ServerGameTestRunner::new();
 
         'ticker: loop {
             let tick_start_time = std::time::Instant::now();
