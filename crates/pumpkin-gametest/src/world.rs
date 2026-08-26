@@ -41,8 +41,6 @@ pub trait GameTestWorld: Send + Sync {
         marker: Option<(BlockPos, String)>,
     ) -> GameTestResult<()>;
 
-    async fn update_test_block_redstone(&self, position: &BlockPos) -> GameTestResult<()>;
-
     async fn trigger_test_block(&self, position: &BlockPos) -> GameTestResult<()>;
 
     async fn reset_test_block(&self, position: &BlockPos) -> GameTestResult<()>;
