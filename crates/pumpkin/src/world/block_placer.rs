@@ -7,6 +7,24 @@ use pumpkin_world::level::Level;
 
 use crate::world::World;
 
+impl World {
+    /// Drops queued block events inside the half-open block box `[min, max)`.
+    /// Structure replacement uses this together with scheduled-tick cleanup so
+    /// deferred work from an old structure cannot execute against its replacement.
+    pub async fn clear_synced_block_events_in_box(&self, min: &BlockPos, max: &BlockPos) {
+        let mut events = self.synced_block_event_queue.lock().await;
+        events.retain(|event| {
+            let pos = event.pos;
+            pos.0.x < min.0.x
+                || pos.0.x >= max.0.x
+                || pos.0.y < min.0.y
+                || pos.0.y >= max.0.y
+                || pos.0.z < min.0.z
+                || pos.0.z >= max.0.z
+        });
+    }
+}
+
 pub struct WorldBlockPlacer<'a> {
     world: &'a World,
     pub block_entity_nbts: Vec<NbtCompound>,
