@@ -8,8 +8,11 @@ use pumpkin_world::level::Level;
 use crate::world::World;
 
 impl World {
-    pub async fn clear_synced_block_events_in_box(&self, min: &BlockPos, max: &BlockPos) {
-        let mut events = self.synced_block_event_queue.lock().await;
+    pub fn clear_synced_block_events_in_box(&self, min: &BlockPos, max: &BlockPos) {
+        let mut events = self
+            .synced_block_event_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         events.retain(|event| {
             let pos = event.pos;
             pos.0.x < min.0.x

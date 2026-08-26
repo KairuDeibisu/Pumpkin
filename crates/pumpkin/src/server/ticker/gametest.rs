@@ -84,14 +84,13 @@ impl GameTestBatchReport {
         }
     }
 
-    async fn fail_to_start(&self, error: &GameTestError) {
+    fn fail_to_start(&self, error: &GameTestError) {
         self.sender
-            .send_message(TextComponent::text(error.to_string()).color_named(NamedColor::Red))
-            .await;
-        self.finish_test(true, 1, 0).await;
+            .send_message(TextComponent::text(error.to_string()).color_named(NamedColor::Red));
+        self.finish_test(true, 1, 0);
     }
 
-    async fn finish_test(&self, required: bool, attempts: u32, successes: u32) {
+    fn finish_test(&self, required: bool, attempts: u32, successes: u32) {
         let attempts = usize::try_from(attempts).unwrap_or(usize::MAX);
         let successes = usize::try_from(successes).unwrap_or(usize::MAX);
         self.total_runs.fetch_add(attempts, Ordering::AcqRel);
@@ -112,49 +111,41 @@ impl GameTestBatchReport {
         let failed_required = self.failed_required.load(Ordering::Acquire);
         let failed_optional = self.failed_optional.load(Ordering::Acquire);
 
-        self.sender
-            .send_message(
-                TextComponent::translate_cross(
-                    "commands.test.summary",
-                    "commands.test.summary",
-                    [TextComponent::text(total.to_string())],
-                )
-                .color_named(NamedColor::White),
+        self.sender.send_message(
+            TextComponent::translate_cross(
+                "commands.test.summary",
+                "commands.test.summary",
+                [TextComponent::text(total.to_string())],
             )
-            .await;
+            .color_named(NamedColor::White),
+        );
 
         if failed_required != 0 {
-            self.sender
-                .send_message(
-                    TextComponent::translate_cross(
-                        "commands.test.summary.failed",
-                        "commands.test.summary.failed",
-                        [TextComponent::text(failed_required.to_string())],
-                    )
-                    .color_named(NamedColor::Red),
+            self.sender.send_message(
+                TextComponent::translate_cross(
+                    "commands.test.summary.failed",
+                    "commands.test.summary.failed",
+                    [TextComponent::text(failed_required.to_string())],
                 )
-                .await;
+                .color_named(NamedColor::Red),
+            );
         } else {
-            self.sender
-                .send_message(
-                    TextComponent::translate_cross(
-                        "commands.test.summary.all_required_passed",
-                        "commands.test.summary.all_required_passed",
-                        [],
-                    )
-                    .color_named(NamedColor::Green),
+            self.sender.send_message(
+                TextComponent::translate_cross(
+                    "commands.test.summary.all_required_passed",
+                    "commands.test.summary.all_required_passed",
+                    [],
                 )
-                .await;
+                .color_named(NamedColor::Green),
+            );
         }
 
         if failed_optional != 0 {
-            self.sender
-                .send_message(TextComponent::translate_cross(
-                    "commands.test.summary.optional_failed",
-                    "commands.test.summary.optional_failed",
-                    [TextComponent::text(failed_optional.to_string())],
-                ))
-                .await;
+            self.sender.send_message(TextComponent::translate_cross(
+                "commands.test.summary.optional_failed",
+                "commands.test.summary.optional_failed",
+                [TextComponent::text(failed_optional.to_string())],
+            ));
         }
     }
 }
@@ -287,8 +278,7 @@ impl ManagedGameTest {
                     &self.world,
                     TextComponent::text(self.retry_status(true, elapsed_ms))
                         .color_named(NamedColor::Green),
-                )
-                .await;
+                );
                 self.retry_options
                     .has_tries_left(self.attempts, self.successes)
             } else if !is_flaky {
@@ -301,8 +291,7 @@ impl ManagedGameTest {
                         tick
                     ))
                     .color_named(NamedColor::Green),
-                )
-                .await;
+                );
                 false
             } else if self.successes >= self.run.test.required_successes() {
                 broadcast_world(
@@ -314,8 +303,7 @@ impl ManagedGameTest {
                         self.attempts
                     ))
                     .color_named(NamedColor::Green),
-                )
-                .await;
+                );
                 false
             } else {
                 broadcast_world(
@@ -327,20 +315,18 @@ impl ManagedGameTest {
                         self.successes
                     ))
                     .color_named(NamedColor::Green),
-                )
-                .await;
+                );
                 true
             }
         } else if !is_flaky {
             let error_message = error.map(ToString::to_string);
-            self.report_failure(error_message.as_deref()).await;
+            self.report_failure(error_message.as_deref());
             if self.retry_options.has_retries() {
                 broadcast_world(
                     &self.world,
                     TextComponent::text(self.retry_status(false, elapsed_ms))
                         .color_named(NamedColor::Red),
-                )
-                .await;
+                );
                 self.retry_options
                     .has_tries_left(self.attempts, self.successes)
             } else {
@@ -364,8 +350,7 @@ impl ManagedGameTest {
             broadcast_world(
                 &self.world,
                 TextComponent::text(text).color_named(NamedColor::Yellow),
-            )
-            .await;
+            );
 
             if max_attempts
                 .saturating_sub(self.attempts)
@@ -384,7 +369,7 @@ impl ManagedGameTest {
                     last_error,
                 };
                 let exhausted_message = exhausted.to_string();
-                self.report_failure(Some(&exhausted_message)).await;
+                self.report_failure(Some(&exhausted_message));
                 false
             }
         };
@@ -394,13 +379,11 @@ impl ManagedGameTest {
             return;
         }
 
-        self.report
-            .finish_test(
-                self.run.test.is_required(),
-                self.attempts,
-                self.successes,
-            )
-            .await;
+        self.report.finish_test(
+            self.run.test.is_required(),
+            self.attempts,
+            self.successes,
+        );
         self.done = true;
     }
 
@@ -414,7 +397,7 @@ impl ManagedGameTest {
         self.rerun_scheduled = false;
     }
 
-    async fn report_failure(&self, error_message: Option<&str>) {
+    fn report_failure(&self, error_message: Option<&str>) {
         let optional = if self.run.test.is_required() {
             ""
         } else {
@@ -431,7 +414,7 @@ impl ManagedGameTest {
         } else {
             NamedColor::Yellow
         };
-        broadcast_world(&self.world, TextComponent::text(text).color_named(color)).await;
+        broadcast_world(&self.world, TextComponent::text(text).color_named(color));
     }
 
     fn retry_status(&self, passed: bool, elapsed_ms: u128) -> String {
@@ -485,7 +468,7 @@ pub(super) async fn drain_game_test_queue(
                     error = %error,
                     "Unable to start queued GameTest"
                 );
-                report.fail_to_start(&error).await;
+                report.fail_to_start(&error);
             }
         }
     }
@@ -533,10 +516,10 @@ async fn prepare_test_run(
     })
 }
 
-async fn broadcast_world(world: &World, message: TextComponent) {
+fn broadcast_world(world: &World, message: TextComponent) {
     let players = world.players.load_full();
     for player in players.iter() {
-        player.send_system_message(&message).await;
+        player.send_system_message(&message);
     }
 }
 
@@ -588,9 +571,7 @@ impl GameTestWorld for ServerGameTestWorld {
         block_state_id: BlockStateId,
         flags: BlockFlags,
     ) -> GameTestResult<()> {
-        self.world
-            .set_block_state(position, block_state_id, flags)
-            .await;
+        self.world.set_block_state(position, block_state_id, flags);
         Ok(())
     }
 
@@ -694,9 +675,7 @@ impl GameTestWorld for ServerGameTestWorld {
     }
 
     async fn clear_block_events(&self, min: &BlockPos, max: &BlockPos) -> GameTestResult<()> {
-        self.world
-            .clear_synced_block_events_in_box(min, max)
-            .await;
+        self.world.clear_synced_block_events_in_box(min, max);
         Ok(())
     }
 

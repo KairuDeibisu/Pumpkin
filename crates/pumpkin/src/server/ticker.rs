@@ -52,8 +52,10 @@ impl Ticker {
             }
 
             if should_tick_game_tests {
-                drain_game_test_queue(server, &mut game_test_runner).await;
-                game_test_runner.tick().await;
+                server.runtime.block_on(async {
+                    drain_game_test_queue(server, &mut game_test_runner).await;
+                    game_test_runner.tick().await;
+                });
             }
 
             let tick_duration_nanos = tick_start_time.elapsed().as_nanos() as i64;

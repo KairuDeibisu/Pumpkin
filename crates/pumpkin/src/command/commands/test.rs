@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use futures::executor::block_on;
 use pumpkin_protocol::java::client::play::{ArgumentType, CommandSuggestion, SuggestionProviders};
 use pumpkin_util::PermissionLvl;
 use pumpkin_util::identifier::Identifier;
@@ -58,35 +59,27 @@ impl ArgumentConsumer for TestInstanceArgumentConsumer {
         server: &'a Server,
         args: &mut RawArgs<'a>,
     ) -> ConsumeResult<'a> {
-        let selector = args.pop().map(|arg| arg.value);
-        Box::pin(async move {
-            let selector = selector?;
-            let names = server.datapack_manager.get_test_instance_names().await;
-            names
-                .iter()
-                .any(|name| resource_selector_matches(selector, name))
-                .then_some(Arg::Simple(selector))
-        })
+        let selector = args.pop().map(|arg| arg.value)?;
+        let names = block_on(server.datapack_manager.get_test_instance_names());
+        names
+            .iter()
+            .any(|name| resource_selector_matches(selector, name))
+            .then_some(Arg::Simple(selector))
     }
 
-    fn suggest<'a>(
-        &'a self,
+    fn suggest(
+        &self,
         _sender: &CommandSender,
-        server: &'a Server,
-        input: &'a str,
-    ) -> SuggestResult<'a> {
-        Box::pin(async move {
-            let current = current_suggestion_token(input);
-            let suggestions = server
-                .datapack_manager
-                .get_test_instance_names()
-                .await
-                .into_iter()
-                .filter(|name| resource_suggestion_matches(current, name))
-                .map(|name| CommandSuggestion::new(name, None))
-                .collect();
-            Ok(Some(suggestions))
-        })
+        server: &Server,
+        input: &str,
+    ) -> SuggestResult {
+        let current = current_suggestion_token(input);
+        let suggestions = block_on(server.datapack_manager.get_test_instance_names())
+            .into_iter()
+            .filter(|name| resource_suggestion_matches(current, name))
+            .map(|name| CommandSuggestion::new(name, None))
+            .collect();
+        Ok(Some(suggestions))
     }
 }
 
@@ -104,133 +97,126 @@ impl<'a> FindArg<'a> for TestInstanceArgumentConsumer {
 struct RunExecutor;
 
 impl CommandExecutor for RunExecutor {
-    fn execute<'a>(
-        &'a self,
-        sender: &'a CommandSender,
-        server: &'a Server,
-        args: &'a ConsumedArgs<'a>,
-    ) -> CommandResult<'a> {
-        Box::pin(async move {
-            let selector = TestInstanceArgumentConsumer::find_arg(args, ARG_TESTS)?;
-            let names = server.datapack_manager.get_test_instance_names().await;
-            let selected: Vec<_> = names
-                .into_iter()
-                .filter(|name| resource_selector_matches(selector, name))
-                .collect();
-            if selected.is_empty() {
-                return Err(CommandError::CommandFailed(TextComponent::translate_cross(
-                    "argument.resource_selector.not_found",
-                    "argument.resource_selector.not_found",
-                    [
-                        TextComponent::text(selector.to_string()),
-                        TextComponent::text(TEST_INSTANCE_REGISTRY.to_string()),
-                    ],
-                )));
-            }
+    fn execute(
+        &self,
+        sender: &CommandSender,
+        server: &Server,
+        args: &ConsumedArgs,
+    ) -> CommandResult {
+        let selector = TestInstanceArgumentConsumer::find_arg(args, ARG_TESTS)?;
+        let names = block_on(server.datapack_manager.get_test_instance_names());
+        let selected: Vec<_> = names
+            .into_iter()
+            .filter(|name| resource_selector_matches(selector, name))
+            .collect();
+        if selected.is_empty() {
+            return Err(CommandError::CommandFailed(TextComponent::translate_cross(
+                "argument.resource_selector.not_found",
+                "argument.resource_selector.not_found",
+                [
+                    TextComponent::text(selector.to_string()),
+                    TextComponent::text(TEST_INSTANCE_REGISTRY.to_string()),
+                ],
+            )));
+        }
 
-            // Vanilla TestCommand::run always clears the current GameTestTicker first.
-            // Without this, issuing another /test run with a different retry mode lets
-            // two runners own the same controller/structure concurrently.
-            stop_game_tests().await;
+        // Vanilla TestCommand::run always clears the current GameTestTicker first.
+        // Without this, issuing another /test run with a different retry mode lets
+        // two runners own the same controller/structure concurrently.
+        block_on(stop_game_tests());
 
-            let number_was_supplied = args.contains_key(ARG_NUMBER_OF_TIMES);
-            let number_of_times = if number_was_supplied {
-                BoundedNumArgumentConsumer::<i32>::find_arg(args, ARG_NUMBER_OF_TIMES)??
-            } else {
-                1
-            };
-            let until_failed = if args.contains_key(ARG_UNTIL_FAILED) {
-                BoolArgConsumer::find_arg(args, ARG_UNTIL_FAILED)?
-            } else {
-                // Vanilla RetryOptions.noRetries() is (1, true), while specifying
-                // numberOfTimes without untilFailed defaults haltOnFailure to false.
-                !number_was_supplied
-            };
-            let rotation_steps = if args.contains_key(ARG_ROTATION_STEPS) {
-                BoundedNumArgumentConsumer::<i32>::find_arg(args, ARG_ROTATION_STEPS)??
-            } else {
-                0
-            };
-            let tests_per_row = if args.contains_key(ARG_TESTS_PER_ROW) {
-                BoundedNumArgumentConsumer::<i32>::find_arg(args, ARG_TESTS_PER_ROW)??
-            } else {
-                DEFAULT_TESTS_PER_ROW
-            }
-            .max(1);
+        let number_was_supplied = args.contains_key(ARG_NUMBER_OF_TIMES);
+        let number_of_times = if number_was_supplied {
+            BoundedNumArgumentConsumer::<i32>::find_arg(args, ARG_NUMBER_OF_TIMES)??
+        } else {
+            1
+        };
+        let until_failed = if args.contains_key(ARG_UNTIL_FAILED) {
+            BoolArgConsumer::find_arg(args, ARG_UNTIL_FAILED)?
+        } else {
+            // Vanilla RetryOptions.noRetries() is (1, true), while specifying
+            // numberOfTimes without untilFailed defaults haltOnFailure to false.
+            !number_was_supplied
+        };
+        let rotation_steps = if args.contains_key(ARG_ROTATION_STEPS) {
+            BoundedNumArgumentConsumer::<i32>::find_arg(args, ARG_ROTATION_STEPS)??
+        } else {
+            0
+        };
+        let tests_per_row = if args.contains_key(ARG_TESTS_PER_ROW) {
+            BoundedNumArgumentConsumer::<i32>::find_arg(args, ARG_TESTS_PER_ROW)??
+        } else {
+            DEFAULT_TESTS_PER_ROW
+        }
+        .max(1);
 
-            let world = sender
-                .world_or_first(server)
-                .ok_or(CommandError::InvalidRequirement)?;
-            let (base_x, base_z) = if let Some(source_pos) = sender.position() {
-                (
-                    source_pos.x.floor() as i32,
-                    source_pos.z.floor() as i32 + TEST_POS_Z_OFFSET_FROM_PLAYER,
-                )
-            } else {
-                let level_info = world.level_info.load();
-                (
-                    level_info.spawn_x,
-                    level_info.spawn_z + TEST_POS_Z_OFFSET_FROM_PLAYER,
-                )
-            };
+        let world = sender
+            .world_or_first(server)
+            .ok_or(CommandError::InvalidRequirement)?;
+        let (base_x, base_z) = if let Some(source_pos) = sender.position() {
+            (
+                source_pos.x.floor() as i32,
+                source_pos.z.floor() as i32 + TEST_POS_Z_OFFSET_FROM_PLAYER,
+            )
+        } else {
+            let level_info = world.level_info.load();
+            (
+                level_info.spawn_x,
+                level_info.spawn_z + TEST_POS_Z_OFFSET_FROM_PLAYER,
+            )
+        };
 
-            sender
-                .send_message(TextComponent::translate_cross(
-                    "commands.test.run.running",
-                    "commands.test.run.running",
-                    [TextComponent::text(selected.len().to_string())],
-                ))
-                .await;
+        sender.send_message(TextComponent::translate_cross(
+            "commands.test.run.running",
+            "commands.test.run.running",
+            [TextComponent::text(selected.len().to_string())],
+        ));
 
-            let report = Arc::new(GameTestBatchReport::new(sender.clone(), selected.len()));
-            let retry_options = GameTestRetryOptions::new(number_of_times, until_failed);
-            for (index, test_id) in selected.into_iter().enumerate() {
-                let index = index as i32;
-                let column = index % tests_per_row;
-                let row = index / tests_per_row;
-                let test_x = base_x + column * TEST_GRID_SPACING;
-                let test_z = base_z + row * TEST_GRID_SPACING;
-                enqueue_game_test(GameTestRequest::new(
-                    test_id.clone(),
-                    world.clone(),
-                    test_x,
-                    test_z,
-                    rotation_steps,
-                    retry_options,
-                    report.clone(),
-                ))
-                .await;
+        let report = Arc::new(GameTestBatchReport::new(sender.clone(), selected.len()));
+        let retry_options = GameTestRetryOptions::new(number_of_times, until_failed);
+        for (index, test_id) in selected.into_iter().enumerate() {
+            let index = index as i32;
+            let column = index % tests_per_row;
+            let row = index / tests_per_row;
+            let test_x = base_x + column * TEST_GRID_SPACING;
+            let test_z = base_z + row * TEST_GRID_SPACING;
+            block_on(enqueue_game_test(GameTestRequest::new(
+                test_id.clone(),
+                world.clone(),
+                test_x,
+                test_z,
+                rotation_steps,
+                retry_options,
+                report.clone(),
+            )));
 
-                info!(
-                    target: "pumpkin::gametest",
-                    test = %test_id,
-                    test_x,
-                    test_z,
-                    number_of_times,
-                    until_failed,
-                    rotation_steps,
-                    "Queued GameTest request"
-                );
-            }
+            info!(
+                target: "pumpkin::gametest",
+                test = %test_id,
+                test_x,
+                test_z,
+                number_of_times,
+                until_failed,
+                rotation_steps,
+                "Queued GameTest request"
+            );
+        }
 
-            Ok(1)
-        })
+        Ok(1)
     }
 }
 
 struct StopExecutor;
 
 impl CommandExecutor for StopExecutor {
-    fn execute<'a>(
-        &'a self,
-        _sender: &'a CommandSender,
-        _server: &'a Server,
-        _args: &'a ConsumedArgs<'a>,
-    ) -> CommandResult<'a> {
-        Box::pin(async move {
-            stop_game_tests().await;
-            Ok(1)
-        })
+    fn execute(
+        &self,
+        _sender: &CommandSender,
+        _server: &Server,
+        _args: &ConsumedArgs,
+    ) -> CommandResult {
+        block_on(stop_game_tests());
+        Ok(1)
     }
 }
 
