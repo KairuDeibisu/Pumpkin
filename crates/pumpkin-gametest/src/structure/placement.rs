@@ -203,6 +203,13 @@ pub async fn place_structure_with_controller_rotation(
         }
     }
 
+    // GameTestInfo::placeStructure clears scheduled block ticks in the test box
+    // after replacement, preventing old-attempt redstone/block work from running
+    // against the freshly placed structure.
+    world
+        .clear_scheduled_block_ticks(&test_min, &test_max)
+        .await?;
+
     Ok(PlacedStructure::new(
         test_instance_pos,
         origin,
