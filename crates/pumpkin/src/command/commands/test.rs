@@ -3,8 +3,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use pumpkin_data::BlockStateId;
 use pumpkin_gametest::{
-    BlockBasedTest, GameTestResult, GameTestWorld, StructureTemplate, TestRun,
+    BlockBasedTest, GameTestError, GameTestResult, GameTestWorld, StructureTemplate, TestRun,
 };
+use pumpkin_nbt::NbtCompound;
 use pumpkin_protocol::java::client::play::{
     ArgumentType, CommandSuggestion, StringProtoArgBehavior, SuggestionProviders,
 };
@@ -16,6 +17,11 @@ use pumpkin_world::chunk::ChunkHeightmapType;
 use pumpkin_world::world::BlockFlags;
 use tracing::info;
 
+use crate::block::blocks::redstone::block_receives_redstone_power;
+use crate::block::entities::{
+    block_entity_from_nbt,
+    test_block::{TestBlockBlockEntity, TestBlockMode as PumpkinTestBlockMode},
+};
 use crate::command::args::{
     Arg, ArgumentConsumer, ConsumeResult, ConsumedArgs, FindArg, GetClientSideArgParser,
     SuggestResult,
@@ -91,6 +97,18 @@ struct CommandGameTestWorld {
     world: Arc<World>,
 }
 
+impl CommandGameTestWorld {
+    fn test_block_entity(&self, position: &BlockPos) -> GameTestResult<Arc<TestBlockBlockEntity>> {
+        let entity = self.world.get_block_entity(position).ok_or_else(|| {
+            GameTestError::World(format!("Missing test block entity at {position}"))
+        })?;
+
+        Arc::downcast::<TestBlockBlockEntity>(entity).map_err(|_| {
+            GameTestError::World(format!("Block entity at {position} is not a test block"))
+        })
+    }
+}
+
 #[async_trait]
 impl GameTestWorld for CommandGameTestWorld {
     async fn block_state_id(&self, position: &BlockPos) -> BlockStateId {
@@ -107,6 +125,70 @@ impl GameTestWorld for CommandGameTestWorld {
             .set_block_state(position, block_state_id, flags)
             .await;
         Ok(())
+    }
+
+    async fn set_block_entity_nbt(
+        &self,
+        position: &BlockPos,
+        nbt: &NbtCompound,
+    ) -> GameTestResult<()> {
+        // StructureTemplate loads the saved block-entity payload at the transformed
+        // world position. Pumpkin's factory expects absolute coordinates, so replace
+        // any structure-local/stale coordinates before constructing the entity.
+        let mut nbt = nbt.clone();
+        nbt.put_int("x", position.0.x);
+        nbt.put_int("y", position.0.y);
+        nbt.put_int("z", position.0.z);
+
+        let entity = block_entity_from_nbt(&nbt).ok_or_else(|| {
+            let id = nbt.get_string("id").unwrap_or("<missing id>");
+            GameTestError::World(format!(
+                "Unable to create block entity '{id}' at {position}"
+            ))
+        })?;
+
+        self.world.remove_block_entity(position);
+        self.world.add_block_entity(entity.clone());
+        self.world.update_block_entity(&entity);
+        Ok(())
+    }
+
+    async fn update_test_block_redstone(&self, position: &BlockPos) -> GameTestResult<()> {
+        let entity = self.test_block_entity(position)?;
+        if entity.mode().await == PumpkinTestBlockMode::Start {
+            return Ok(());
+        }
+
+        let should_trigger = block_receives_redstone_power(&self.world, position).await;
+        let is_powered = entity.is_powered();
+        if should_trigger && !is_powered {
+            entity.set_powered(true);
+            entity.trigger(&self.world).await;
+        } else if !should_trigger && is_powered {
+            entity.set_powered(false);
+        }
+
+        Ok(())
+    }
+
+    async fn trigger_test_block(&self, position: &BlockPos) -> GameTestResult<()> {
+        self.test_block_entity(position)?
+            .trigger(&self.world)
+            .await;
+        Ok(())
+    }
+
+    async fn reset_test_block(&self, position: &BlockPos) -> GameTestResult<()> {
+        self.test_block_entity(position)?.reset(&self.world).await;
+        Ok(())
+    }
+
+    async fn test_block_triggered(&self, position: &BlockPos) -> GameTestResult<bool> {
+        Ok(self.test_block_entity(position)?.has_triggered())
+    }
+
+    async fn test_block_message(&self, position: &BlockPos) -> GameTestResult<String> {
+        Ok(self.test_block_entity(position)?.message().await)
     }
 
     async fn surface_height(&self, x: i32, z: i32) -> i32 {
@@ -168,8 +250,7 @@ impl CommandExecutor for RunExecutor {
 
             let structure_name = test_instance.structure.clone();
             let test = BlockBasedTest::new(name, test_instance);
-            let game_test_world: Arc<dyn GameTestWorld> =
-                Arc::new(CommandGameTestWorld { world });
+            let game_test_world: Arc<dyn GameTestWorld> = Arc::new(CommandGameTestWorld { world });
             let run = TestRun::new(
                 test,
                 game_test_world,
