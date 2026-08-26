@@ -128,6 +128,11 @@ impl CommandExecutor for RunExecutor {
                 )));
             }
 
+            // Vanilla TestCommand::run always clears the current GameTestTicker first.
+            // Without this, issuing another /test run with a different retry mode lets
+            // two runners own the same controller/structure concurrently.
+            stop_game_tests().await;
+
             let number_was_supplied = args.contains_key(ARG_NUMBER_OF_TIMES);
             let number_of_times = if number_was_supplied {
                 BoundedNumArgumentConsumer::<i32>::find_arg(args, ARG_NUMBER_OF_TIMES)??
