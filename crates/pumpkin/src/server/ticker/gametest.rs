@@ -1,13 +1,16 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use pumpkin_data::{BlockState, BlockStateId};
 use pumpkin_gametest::{
     BlockBasedTest, GameTestError, GameTestResult, GameTestWorld, StructureTemplate, TestRotation,
-    TestRun, TestRunner,
+    TestRun, TestState,
 };
 use pumpkin_nbt::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
+use pumpkin_util::text::{TextComponent, color::NamedColor};
 use pumpkin_world::{chunk::ChunkHeightmapType, world::BlockFlags};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -17,6 +20,7 @@ use crate::{
         BlockEntity, block_entity_from_nbt, test_block::TestBlockBlockEntity,
         test_instance_block::TestInstanceBlockBlockEntity,
     },
+    command::CommandSender,
     server::Server,
     world::World,
 };
@@ -24,27 +28,156 @@ use crate::{
 static GAME_TEST_QUEUE: LazyLock<Mutex<Vec<GameTestRequest>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
+#[derive(Clone, Copy, Debug)]
+pub struct GameTestRetryOptions {
+    number_of_tries: i32,
+    halt_on_failure: bool,
+}
+
+impl GameTestRetryOptions {
+    #[must_use]
+    pub const fn new(number_of_tries: i32, halt_on_failure: bool) -> Self {
+        Self {
+            number_of_tries,
+            halt_on_failure,
+        }
+    }
+
+    #[must_use]
+    const fn has_retries(self) -> bool {
+        self.number_of_tries != 1
+    }
+
+    #[must_use]
+    const fn unlimited_tries(self) -> bool {
+        self.number_of_tries < 1
+    }
+
+    #[must_use]
+    fn has_tries_left(self, attempts: u32, successes: u32) -> bool {
+        let has_failures = attempts != successes;
+        let has_more_attempts = self.unlimited_tries()
+            || attempts < u32::try_from(self.number_of_tries).unwrap_or(u32::MAX);
+        has_more_attempts && (!has_failures || !self.halt_on_failure)
+    }
+}
+
+pub struct GameTestBatchReport {
+    sender: CommandSender,
+    remaining_tests: AtomicUsize,
+    total_runs: AtomicUsize,
+    failed_required: AtomicUsize,
+    failed_optional: AtomicUsize,
+}
+
+impl GameTestBatchReport {
+    #[must_use]
+    pub fn new(sender: CommandSender, test_count: usize) -> Self {
+        Self {
+            sender,
+            remaining_tests: AtomicUsize::new(test_count),
+            total_runs: AtomicUsize::new(0),
+            failed_required: AtomicUsize::new(0),
+            failed_optional: AtomicUsize::new(0),
+        }
+    }
+
+    async fn finish_test(&self, required: bool, attempts: u32, successes: u32) {
+        self.total_runs.fetch_add(attempts as usize, Ordering::AcqRel);
+        let failures = attempts.saturating_sub(successes) as usize;
+        if failures != 0 {
+            if required {
+                self.failed_required.fetch_add(failures, Ordering::AcqRel);
+            } else {
+                self.failed_optional.fetch_add(failures, Ordering::AcqRel);
+            }
+        }
+
+        if self.remaining_tests.fetch_sub(1, Ordering::AcqRel) != 1 {
+            return;
+        }
+
+        let total = self.total_runs.load(Ordering::Acquire);
+        let failed_required = self.failed_required.load(Ordering::Acquire);
+        let failed_optional = self.failed_optional.load(Ordering::Acquire);
+
+        self.sender
+            .send_message(
+                TextComponent::translate_cross(
+                    "commands.test.summary",
+                    "commands.test.summary",
+                    [TextComponent::text(total.to_string())],
+                )
+                .color_named(NamedColor::White),
+            )
+            .await;
+
+        if failed_required != 0 {
+            self.sender
+                .send_message(
+                    TextComponent::translate_cross(
+                        "commands.test.summary.failed",
+                        "commands.test.summary.failed",
+                        [TextComponent::text(failed_required.to_string())],
+                    )
+                    .color_named(NamedColor::Red),
+                )
+                .await;
+        } else {
+            self.sender
+                .send_message(
+                    TextComponent::translate_cross(
+                        "commands.test.summary.all_required_passed",
+                        "commands.test.summary.all_required_passed",
+                        [],
+                    )
+                    .color_named(NamedColor::Green),
+                )
+                .await;
+        }
+
+        if failed_optional != 0 {
+            self.sender
+                .send_message(TextComponent::translate_cross(
+                    "commands.test.summary.optional_failed",
+                    "commands.test.summary.optional_failed",
+                    [TextComponent::text(failed_optional.to_string())],
+                ))
+                .await;
+        }
+    }
+}
+
 /// A request to start a GameTest.
-///
-/// This is deliberately command-agnostic and runtime-light: producers choose a
-/// test id, world, and anchor coordinates. Definition/structure loading, world
-/// adaptation, controller state, START pulses, retries, and completion all belong
-/// to the GameTest runtime owned by the server ticker.
 pub struct GameTestRequest {
     test_id: String,
     world: Arc<World>,
     test_x: i32,
     test_z: i32,
+    rotation_steps: i32,
+    retry_options: GameTestRetryOptions,
+    report: Arc<GameTestBatchReport>,
 }
 
 impl GameTestRequest {
     #[must_use]
-    pub fn new(test_id: impl Into<String>, world: Arc<World>, test_x: i32, test_z: i32) -> Self {
+    pub fn new(
+        test_id: impl Into<String>,
+        world: Arc<World>,
+        test_x: i32,
+        test_z: i32,
+        rotation_steps: i32,
+        retry_options: GameTestRetryOptions,
+        report: Arc<GameTestBatchReport>,
+    ) -> Self {
         Self {
             test_id: test_id.into(),
             world,
             test_x,
             test_z,
+            rotation_steps,
+            retry_options,
+            report,
         }
     }
 }
@@ -53,7 +186,152 @@ pub async fn enqueue_game_test(request: GameTestRequest) {
     GAME_TEST_QUEUE.lock().await.push(request);
 }
 
-pub(super) async fn drain_game_test_queue(server: &Arc<Server>, runner: &mut TestRunner) {
+pub(super) struct ServerGameTestRunner {
+    active: Vec<ManagedGameTest>,
+}
+
+impl ServerGameTestRunner {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { active: Vec::new() }
+    }
+
+    fn enqueue(&mut self, run: ManagedGameTest) {
+        self.active.push(run);
+    }
+
+    pub async fn tick(&mut self) {
+        for managed in &mut self.active {
+            if managed.done {
+                continue;
+            }
+
+            managed.run.tick().await;
+            if managed.run.state.is_finished() {
+                managed.handle_completion().await;
+            }
+        }
+
+        self.active.retain(|managed| !managed.done);
+    }
+}
+
+struct ManagedGameTest {
+    run: TestRun,
+    world: Arc<World>,
+    retry_options: GameTestRetryOptions,
+    report: Arc<GameTestBatchReport>,
+    command_attempts: u32,
+    command_successes: u32,
+    started_at: Instant,
+    done: bool,
+}
+
+impl ManagedGameTest {
+    async fn handle_completion(&mut self) {
+        let (passed, tick, error_message) = match &self.run.state {
+            TestState::Passed { tick } => (true, *tick, None),
+            TestState::Failed { tick, error } => (false, *tick, Some(error.to_string())),
+            _ => return,
+        };
+
+        self.command_attempts = self.command_attempts.saturating_add(1);
+        if passed {
+            self.command_successes = self.command_successes.saturating_add(1);
+        }
+        let elapsed_ms = self.started_at.elapsed().as_millis();
+
+        if passed {
+            let text = if self.retry_options.has_retries() {
+                self.retry_status(true, elapsed_ms)
+            } else {
+                format!(
+                    "{} passed! ({}ms / {}gameticks)",
+                    self.run.test.id(),
+                    elapsed_ms,
+                    tick
+                )
+            };
+            broadcast_world(
+                &self.world,
+                TextComponent::text(text).color_named(NamedColor::Green),
+            )
+            .await;
+        } else {
+            let optional = if self.run.test.is_required() {
+                ""
+            } else {
+                "(optional) "
+            };
+            let text = format!(
+                "{}{} failed! {}",
+                optional,
+                self.run.test.id(),
+                error_message.as_deref().unwrap_or("unknown error")
+            );
+            let color = if self.run.test.is_required() {
+                NamedColor::Red
+            } else {
+                NamedColor::Yellow
+            };
+            broadcast_world(&self.world, TextComponent::text(text).color_named(color)).await;
+
+            if self.retry_options.has_retries() {
+                broadcast_world(
+                    &self.world,
+                    TextComponent::text(self.retry_status(false, elapsed_ms))
+                        .color_named(NamedColor::Red),
+                )
+                .await;
+            }
+        }
+
+        if self
+            .retry_options
+            .has_tries_left(self.command_attempts, self.command_successes)
+        {
+            self.run.reset_for_rerun();
+            self.started_at = Instant::now();
+            return;
+        }
+
+        self.report
+            .finish_test(
+                self.run.test.is_required(),
+                self.command_attempts,
+                self.command_successes,
+            )
+            .await;
+        self.done = true;
+    }
+
+    fn retry_status(&self, passed: bool, elapsed_ms: u128) -> String {
+        let failures = self.command_attempts.saturating_sub(self.command_successes);
+        let mut report = format!(
+            "[Run: {:4}, Ok: {:4}, Fail: {:4}",
+            self.command_attempts, self.command_successes, failures
+        );
+        if !self.retry_options.unlimited_tries() {
+            let left = u32::try_from(self.retry_options.number_of_tries)
+                .unwrap_or_default()
+                .saturating_sub(self.command_attempts);
+            report.push_str(&format!(", Left: {left:4}"));
+        }
+        report.push(']');
+        let name = format!(
+            "{} {}! {}ms",
+            self.run.test.id(),
+            if passed { "passed" } else { "failed" },
+            elapsed_ms
+        );
+        format!("{report:<53}{name}")
+    }
+}
+
+pub(super) async fn drain_game_test_queue(
+    server: &Arc<Server>,
+    runner: &mut ServerGameTestRunner,
+) {
     let queued = {
         let mut queue = GAME_TEST_QUEUE.lock().await;
         std::mem::take(&mut *queue)
@@ -78,13 +356,17 @@ pub(super) async fn drain_game_test_queue(server: &Arc<Server>, runner: &mut Tes
     }
 }
 
-async fn prepare_test_run(server: &Arc<Server>, request: GameTestRequest) -> GameTestResult<TestRun> {
-    let test_instance = server
+async fn prepare_test_run(
+    server: &Arc<Server>,
+    request: GameTestRequest,
+) -> GameTestResult<ManagedGameTest> {
+    let mut test_instance = server
         .datapack_manager
         .get_test_instance(&request.test_id)
         .await
         .ok_or_else(|| GameTestError::World(format!("Unknown test instance '{}'", request.test_id)))?;
 
+    test_instance.rotation = rotate_by_steps(test_instance.rotation, request.rotation_steps);
     let structure = server
         .datapack_manager
         .load_structure(&test_instance.structure)
@@ -92,17 +374,48 @@ async fn prepare_test_run(server: &Arc<Server>, request: GameTestRequest) -> Gam
         .map_err(GameTestError::World)?;
     let template = StructureTemplate::from_nbt(&structure)?;
     let test = BlockBasedTest::new(request.test_id, test_instance);
-    let world: Arc<dyn GameTestWorld> = Arc::new(ServerGameTestWorld {
-        world: request.world,
+    let adapter_world: Arc<dyn GameTestWorld> = Arc::new(ServerGameTestWorld {
+        world: request.world.clone(),
     });
 
-    Ok(TestRun::new(
-        test,
-        world,
-        Arc::new(template),
-        request.test_x,
-        request.test_z,
-    ))
+    Ok(ManagedGameTest {
+        run: TestRun::new(
+            test,
+            adapter_world,
+            Arc::new(template),
+            request.test_x,
+            request.test_z,
+        ),
+        world: request.world,
+        retry_options: request.retry_options,
+        report: request.report,
+        command_attempts: 0,
+        command_successes: 0,
+        started_at: Instant::now(),
+        done: false,
+    })
+}
+
+fn rotate_by_steps(rotation: TestRotation, steps: i32) -> TestRotation {
+    let base = match rotation {
+        TestRotation::None => 0,
+        TestRotation::Clockwise90 => 1,
+        TestRotation::Clockwise180 => 2,
+        TestRotation::Counterclockwise90 => 3,
+    };
+    match (base + steps).rem_euclid(4) {
+        0 => TestRotation::None,
+        1 => TestRotation::Clockwise90,
+        2 => TestRotation::Clockwise180,
+        _ => TestRotation::Counterclockwise90,
+    }
+}
+
+async fn broadcast_world(world: &World, message: TextComponent) {
+    let players = world.players.load_full();
+    for player in players.iter() {
+        player.send_system_message(&message).await;
+    }
 }
 
 struct ServerGameTestWorld {
@@ -190,9 +503,6 @@ impl GameTestWorld for ServerGameTestWorld {
         })?;
 
         self.world.remove_block_entity(position);
-        // add_block_entity is the single installation/synchronization path. Calling
-        // update_block_entity immediately afterwards sent an identical BE packet a
-        // second time for every structure block entity.
         self.world.add_block_entity(entity);
         Ok(())
     }
