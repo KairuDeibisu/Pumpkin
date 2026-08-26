@@ -185,7 +185,10 @@ impl CommandBlock {
             if powered || auto {
                 let conditions_met = Self::conditions_met(&world, &pos, direction);
                 if conditions_met {
-                    let command = command_entity.command.lock().await;
+                    // Never hold the command mutex across dispatch. Commands may
+                    // inspect or mutate command-block data, which can re-enter this
+                    // same entity while execution is still in progress.
+                    let command = command_entity.command.lock().await.clone();
                     let Some(entity) = world.get_block_entity(&pos) else {
                         warn!("Command block entity disappeared during execution");
                         break;
@@ -298,11 +301,14 @@ impl BlockBehaviour for CommandBlock {
                 args.block,
             );
 
+            // Snapshot the command before dispatch so the entity mutex is never
+            // held across arbitrary async command execution.
+            let command = command_entity.command.lock().await.clone();
             Self::execute(
                 &server,
                 args.world.clone(),
                 block_entity.clone(),
-                &command_entity.command.lock().await,
+                &command,
             )
             .await;
 
