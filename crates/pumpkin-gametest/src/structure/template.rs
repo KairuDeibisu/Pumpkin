@@ -3,16 +3,55 @@ use pumpkin_nbt::NbtCompound;
 
 use crate::error::{GameTestError, GameTestResult};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TestBlockMode {
+    Start,
+    Log,
+    Fail,
+    Accept,
+}
+
+impl TestBlockMode {
+    #[must_use]
+    pub const fn serialized_name(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Log => "log",
+            Self::Fail => "fail",
+            Self::Accept => "accept",
+        }
+    }
+
+    #[must_use]
+    pub const fn from_serialized_name(name: &str) -> Option<Self> {
+        match name.as_bytes() {
+            b"start" => Some(Self::Start),
+            b"log" => Some(Self::Log),
+            b"fail" => Some(Self::Fail),
+            b"accept" => Some(Self::Accept),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct StructureBlock {
     pub position: [i32; 3],
     pub state: BlockStateId,
+    pub nbt: Option<NbtCompound>,
+    pub test_mode: Option<TestBlockMode>,
 }
 
 #[derive(Clone, Debug)]
 pub struct StructureTemplate {
     size: [i32; 3],
     blocks: Vec<StructureBlock>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PaletteEntry {
+    state: BlockStateId,
+    test_mode: Option<TestBlockMode>,
 }
 
 impl StructureTemplate {
@@ -59,13 +98,18 @@ impl StructureTemplate {
                     "Structure block {index} has negative state index"
                 ))
             })?;
-            let state = palette.get(state_index).copied().ok_or_else(|| {
+            let palette_entry = palette.get(state_index).copied().ok_or_else(|| {
                 invalid_structure(format!(
                     "Structure block {index} references missing palette state {state_index}"
                 ))
             })?;
 
-            parsed_blocks.push(StructureBlock { position, state });
+            parsed_blocks.push(StructureBlock {
+                position,
+                state: palette_entry.state,
+                nbt: block.get_compound("nbt").cloned(),
+                test_mode: palette_entry.test_mode,
+            });
         }
 
         Ok(Self {
@@ -119,7 +163,7 @@ fn read_vec3(compound: &NbtCompound, name: &str) -> GameTestResult<[i32; 3]> {
     ])
 }
 
-fn resolve_palette(structure: &NbtCompound) -> GameTestResult<Vec<BlockStateId>> {
+fn resolve_palette(structure: &NbtCompound) -> GameTestResult<Vec<PaletteEntry>> {
     let palette = structure
         .get_list("palette")
         .ok_or_else(|| invalid_structure("Structure is missing 'palette'"))?;
@@ -138,6 +182,7 @@ fn resolve_palette(structure: &NbtCompound) -> GameTestResult<Vec<BlockStateId>>
             ))
         })?;
 
+        let mut test_mode = None;
         let state = if let Some(properties) = entry.get_compound("Properties") {
             let mut property_pairs = Vec::with_capacity(properties.child_tags.len());
             for (property_name, property_value) in &properties.child_tags {
@@ -146,6 +191,15 @@ fn resolve_palette(structure: &NbtCompound) -> GameTestResult<Vec<BlockStateId>>
                         "Block '{name}' property '{property_name}' in palette entry {index} is not a string"
                     ))
                 })?;
+                if block == &Block::TEST_BLOCK && property_name.as_ref() == "mode" {
+                    test_mode = Some(TestBlockMode::from_serialized_name(property_value).ok_or_else(
+                        || {
+                            invalid_structure(format!(
+                                "Unknown test block mode '{property_value}' in palette entry {index}"
+                            ))
+                        },
+                    )?);
+                }
                 property_pairs.push((property_name.as_ref(), property_value));
             }
 
@@ -158,7 +212,15 @@ fn resolve_palette(structure: &NbtCompound) -> GameTestResult<Vec<BlockStateId>>
             block.default_state
         };
 
-        states.push(state.id);
+        if block == &Block::TEST_BLOCK && test_mode.is_none() {
+            // TestBlockMode.START is the first/default enum value in the 26.2 server source.
+            test_mode = Some(TestBlockMode::Start);
+        }
+
+        states.push(PaletteEntry {
+            state: state.id,
+            test_mode,
+        });
     }
 
     Ok(states)
