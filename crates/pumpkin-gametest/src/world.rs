@@ -40,6 +40,14 @@ pub trait GameTestWorld: Send + Sync {
         max: &BlockPos,
     ) -> GameTestResult<()>;
 
+    /// Removes scheduled block ticks inside `[min, max)` after a structure has been
+    /// replaced, matching vanilla GameTest placement cleanup.
+    async fn clear_scheduled_block_ticks(
+        &self,
+        min: &BlockPos,
+        max: &BlockPos,
+    ) -> GameTestResult<()>;
+
     async fn set_test_instance_running(&self, position: &BlockPos) -> GameTestResult<()>;
 
     async fn set_test_instance_success(&self, position: &BlockPos) -> GameTestResult<()>;
