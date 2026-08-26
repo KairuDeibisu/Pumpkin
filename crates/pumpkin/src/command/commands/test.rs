@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use pumpkin_protocol::java::client::play::{
-    ArgumentType, CommandSuggestion, SuggestionProviders,
-};
+use pumpkin_protocol::java::client::play::{ArgumentType, SuggestionProviders};
 use pumpkin_util::PermissionLvl;
 use pumpkin_util::identifier::Identifier;
 use pumpkin_util::permission::{Permission, PermissionDefault, PermissionRegistry};
@@ -13,7 +11,6 @@ use crate::command::args::bool::BoolArgConsumer;
 use crate::command::args::bounded_num::BoundedNumArgumentConsumer;
 use crate::command::args::{
     Arg, ArgumentConsumer, ConsumeResult, ConsumedArgs, FindArg, GetClientSideArgParser,
-    SuggestResult,
 };
 use crate::command::node::dispatcher::CommandDispatcher as LegacyCommandDispatcher;
 use crate::command::tree::builder::{argument, literal};
@@ -47,10 +44,10 @@ impl GetClientSideArgParser for TestInstanceArgumentConsumer {
     }
 
     fn get_client_side_suggestion_type_override(&self) -> Option<SuggestionProviders> {
-        // Vanilla can source these suggestions from its client registry. Pumpkin's
-        // datapack registry is dynamic, so ask the server as well; the wire parser
-        // remains minecraft:resource_selector for vanilla-compatible validation.
-        Some(SuggestionProviders::AskServer)
+        // Vanilla ResourceSelectorArgument obtains its completions from the synced
+        // registry. Keep that behavior so client validation and suggestions use the
+        // same minecraft:test_instance data.
+        None
     }
 }
 
@@ -58,41 +55,11 @@ impl ArgumentConsumer for TestInstanceArgumentConsumer {
     fn consume<'a>(
         &'a self,
         _sender: &'a CommandSender,
-        server: &'a Server,
+        _server: &'a Server,
         args: &mut RawArgs<'a>,
     ) -> ConsumeResult<'a> {
-        let value = args.last().map(|arg| arg.value);
-        Box::pin(async move {
-            let value = value?;
-            let names = server.datapack_manager.get_test_instance_names().await;
-            if names.iter().any(|name| resource_selector_matches(value, name)) {
-                args.pop();
-                Some(Arg::Simple(value))
-            } else {
-                None
-            }
-        })
-    }
-
-    fn suggest<'a>(
-        &'a self,
-        _sender: &CommandSender,
-        server: &'a Server,
-        input: &'a str,
-    ) -> SuggestResult<'a> {
-        Box::pin(async move {
-            let fragment = input
-                .split_whitespace()
-                .next_back()
-                .unwrap_or_default();
-            let names = server.datapack_manager.get_test_instance_names().await;
-            let suggestions = names
-                .into_iter()
-                .filter(|name| suggestion_matches(fragment, name))
-                .map(|name| CommandSuggestion::new(name, None))
-                .collect();
-            Ok(Some(suggestions))
-        })
+        let value = args.pop().map(|arg| arg.value);
+        Box::pin(async move { value.map(Arg::Simple) })
     }
 }
 
@@ -257,14 +224,6 @@ pub fn register(dispatcher: &mut LegacyCommandDispatcher, registry: &PermissionR
     dispatcher
         .fallback_dispatcher
         .register(init_command_tree(), PERMISSION);
-}
-
-fn suggestion_matches(fragment: &str, name: &str) -> bool {
-    fragment.is_empty()
-        || name.starts_with(fragment)
-        || name
-            .strip_prefix("minecraft:")
-            .is_some_and(|path| path.starts_with(fragment))
 }
 
 fn resource_selector_matches(selector: &str, name: &str) -> bool {
