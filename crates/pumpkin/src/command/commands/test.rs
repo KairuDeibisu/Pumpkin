@@ -1,29 +1,11 @@
-use std::sync::Arc;
-
-use async_trait::async_trait;
-use pumpkin_data::{BlockState, BlockStateId};
-use pumpkin_gametest::{
-    BlockBasedTest, GameTestError, GameTestResult, GameTestWorld, StructureTemplate, TestRotation,
-    TestRun,
-};
-use pumpkin_nbt::NbtCompound;
 use pumpkin_protocol::java::client::play::{
     ArgumentType, CommandSuggestion, StringProtoArgBehavior, SuggestionProviders,
 };
 use pumpkin_util::PermissionLvl;
-use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::permission::{Permission, PermissionDefault, PermissionRegistry};
 use pumpkin_util::text::TextComponent;
-use pumpkin_world::chunk::ChunkHeightmapType;
-use pumpkin_world::world::BlockFlags;
 use tracing::info;
 
-use crate::block::blocks::redstone::block_receives_redstone_power;
-use crate::block::entities::{
-    BlockEntity, block_entity_from_nbt,
-    test_block::{TestBlockBlockEntity, TestBlockMode as PumpkinTestBlockMode},
-    test_instance_block::TestInstanceBlockBlockEntity,
-};
 use crate::command::args::{
     Arg, ArgumentConsumer, ConsumeResult, ConsumedArgs, FindArg, GetClientSideArgParser,
     SuggestResult,
@@ -33,8 +15,7 @@ use crate::command::tree::builder::{argument, literal};
 use crate::command::tree::{CommandTree, RawArgs};
 use crate::command::{CommandError, CommandExecutor, CommandResult, CommandSender};
 use crate::server::Server;
-use crate::server::ticker::enqueue_game_test;
-use crate::world::World;
+use crate::server::ticker::{GameTestRequest, enqueue_game_test};
 
 const NAMES: [&str; 1] = ["test"];
 const DESCRIPTION: &str = "Runs a GameTest test instance.";
@@ -95,176 +76,6 @@ impl<'a> FindArg<'a> for TestInstanceArgumentConsumer {
     }
 }
 
-struct CommandGameTestWorld {
-    world: Arc<World>,
-}
-
-impl CommandGameTestWorld {
-    fn test_block_entity(&self, position: &BlockPos) -> GameTestResult<Arc<TestBlockBlockEntity>> {
-        let entity = self.world.get_block_entity(position).ok_or_else(|| {
-            GameTestError::World(format!("Missing test block entity at {position}"))
-        })?;
-
-        Arc::downcast::<TestBlockBlockEntity>(entity).map_err(|_| {
-            GameTestError::World(format!("Block entity at {position} is not a test block"))
-        })
-    }
-
-    fn test_instance_block_entity(
-        &self,
-        position: &BlockPos,
-    ) -> GameTestResult<Arc<TestInstanceBlockBlockEntity>> {
-        let entity = self.world.get_block_entity(position).ok_or_else(|| {
-            GameTestError::World(format!("Missing test instance block entity at {position}"))
-        })?;
-
-        Arc::downcast::<TestInstanceBlockBlockEntity>(entity).map_err(|_| {
-            GameTestError::World(format!(
-                "Block entity at {position} is not a test instance block"
-            ))
-        })
-    }
-
-    fn sync_block_entity<T: BlockEntity + 'static>(&self, entity: Arc<T>) {
-        let entity: Arc<dyn BlockEntity> = entity;
-        self.world.update_block_entity(&entity);
-    }
-}
-
-#[async_trait]
-impl GameTestWorld for CommandGameTestWorld {
-    async fn block_state_id(&self, position: &BlockPos) -> BlockStateId {
-        self.world.get_block_state_id_async(position).await
-    }
-
-    async fn set_block_state(
-        &self,
-        position: &BlockPos,
-        block_state_id: BlockStateId,
-        flags: BlockFlags,
-    ) -> GameTestResult<()> {
-        self.world
-            .set_block_state(position, block_state_id, flags)
-            .await;
-        Ok(())
-    }
-
-    async fn rotate_block_state(
-        &self,
-        block_state_id: BlockStateId,
-        rotation: TestRotation,
-    ) -> GameTestResult<BlockStateId> {
-        let (block, _) = BlockState::from_id_with_block(block_state_id);
-        Ok(self
-            .world
-            .block_registry
-            .rotate(block, block_state_id, rotation.as_block_rotation())
-            .id)
-    }
-
-    async fn set_block_entity_nbt(
-        &self,
-        position: &BlockPos,
-        nbt: &NbtCompound,
-    ) -> GameTestResult<()> {
-        // StructureTemplate loads the saved block-entity payload at the transformed
-        // world position. Pumpkin's factory expects absolute coordinates, so replace
-        // any structure-local/stale coordinates before constructing the entity.
-        let mut nbt = nbt.clone();
-        nbt.put_int("x", position.0.x);
-        nbt.put_int("y", position.0.y);
-        nbt.put_int("z", position.0.z);
-
-        let entity = block_entity_from_nbt(&nbt).ok_or_else(|| {
-            let id = nbt.get_string("id").unwrap_or("<missing id>");
-            GameTestError::World(format!(
-                "Unable to create block entity '{id}' at {position}"
-            ))
-        })?;
-
-        self.world.remove_block_entity(position);
-        self.world.add_block_entity(entity.clone());
-        self.world.update_block_entity(&entity);
-        Ok(())
-    }
-
-    async fn set_test_instance_running(&self, position: &BlockPos) -> GameTestResult<()> {
-        let entity = self.test_instance_block_entity(position)?;
-        entity.clear_error_markers().await;
-        entity.set_running().await;
-        self.sync_block_entity(entity);
-        Ok(())
-    }
-
-    async fn set_test_instance_success(&self, position: &BlockPos) -> GameTestResult<()> {
-        let entity = self.test_instance_block_entity(position)?;
-        entity.clear_error_markers().await;
-        entity.set_success().await;
-        self.sync_block_entity(entity);
-        Ok(())
-    }
-
-    async fn set_test_instance_failure(
-        &self,
-        position: &BlockPos,
-        message: &str,
-        marker: Option<(BlockPos, String)>,
-    ) -> GameTestResult<()> {
-        let entity = self.test_instance_block_entity(position)?;
-        entity.clear_error_markers().await;
-        if let Some((marker_position, marker_text)) = marker {
-            entity.mark_error(marker_position, marker_text).await;
-        }
-        entity.set_error_message(message.to_string()).await;
-        self.sync_block_entity(entity);
-        Ok(())
-    }
-
-    async fn update_test_block_redstone(&self, position: &BlockPos) -> GameTestResult<()> {
-        let entity = self.test_block_entity(position)?;
-        if entity.mode().await == PumpkinTestBlockMode::Start {
-            return Ok(());
-        }
-
-        let should_trigger = block_receives_redstone_power(&self.world, position).await;
-        let is_powered = entity.is_powered();
-        if should_trigger && !is_powered {
-            entity.set_powered(true);
-            entity.trigger(&self.world).await;
-        } else if !should_trigger && is_powered {
-            entity.set_powered(false);
-        }
-
-        Ok(())
-    }
-
-    async fn trigger_test_block(&self, position: &BlockPos) -> GameTestResult<()> {
-        self.test_block_entity(position)?
-            .trigger(&self.world)
-            .await;
-        Ok(())
-    }
-
-    async fn reset_test_block(&self, position: &BlockPos) -> GameTestResult<()> {
-        self.test_block_entity(position)?.reset(&self.world).await;
-        Ok(())
-    }
-
-    async fn test_block_triggered(&self, position: &BlockPos) -> GameTestResult<bool> {
-        Ok(self.test_block_entity(position)?.has_triggered())
-    }
-
-    async fn test_block_message(&self, position: &BlockPos) -> GameTestResult<String> {
-        Ok(self.test_block_entity(position)?.message().await)
-    }
-
-    async fn surface_height(&self, x: i32, z: i32) -> i32 {
-        self.world
-            .get_heightmap_height_async(ChunkHeightmapType::WorldSurface, x, z)
-            .await
-    }
-}
-
 struct RunExecutor;
 
 impl CommandExecutor for RunExecutor {
@@ -276,29 +87,6 @@ impl CommandExecutor for RunExecutor {
     ) -> CommandResult<'a> {
         Box::pin(async move {
             let name = TestInstanceArgumentConsumer::find_arg(args, ARG_NAME)?;
-
-            let Some(test_instance) = server.datapack_manager.get_test_instance(name).await else {
-                return Err(CommandError::CommandFailed(TextComponent::text(format!(
-                    "Unknown test instance '{name}'"
-                ))));
-            };
-
-            let structure = server
-                .datapack_manager
-                .load_structure(&test_instance.structure)
-                .await
-                .map_err(|error| {
-                    CommandError::CommandFailed(TextComponent::text(format!(
-                        "Failed to load test instance '{name}': {error}"
-                    )))
-                })?;
-
-            let template = StructureTemplate::from_nbt(&structure).map_err(|error| {
-                CommandError::CommandFailed(TextComponent::text(format!(
-                    "Failed to load test instance '{name}': {error}"
-                )))
-            })?;
-
             let world = sender
                 .world_or_first(server)
                 .ok_or(CommandError::InvalidRequirement)?;
@@ -315,31 +103,19 @@ impl CommandExecutor for RunExecutor {
                 )
             };
 
-            let structure_name = test_instance.structure.clone();
-            let test = BlockBasedTest::new(name, test_instance);
-            let game_test_world: Arc<dyn GameTestWorld> = Arc::new(CommandGameTestWorld { world });
-            let run = TestRun::new(
-                test,
-                game_test_world,
-                Arc::new(template),
-                test_x,
-                test_z,
-            );
-
-            enqueue_game_test(run).await;
+            enqueue_game_test(GameTestRequest::new(name, world, test_x, test_z)).await;
 
             info!(
                 target: "pumpkin::gametest",
                 test = name,
-                structure = %structure_name,
                 test_x,
                 test_z,
-                "Queued GameTest"
+                "Queued GameTest request"
             );
 
             sender
                 .send_message(TextComponent::text(format!(
-                    "Started test instance '{name}' using structure '{structure_name}'"
+                    "Queued test instance '{name}'"
                 )))
                 .await;
 
