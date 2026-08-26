@@ -81,6 +81,35 @@ pub async fn place_structure(
     test_z: i32,
     padding: i32,
 ) -> GameTestResult<PlacedStructure> {
+    place_structure_with_controller_rotation(
+        world,
+        template,
+        test_id,
+        rotation,
+        TestRotation::None,
+        test_x,
+        test_y,
+        test_z,
+        padding,
+    )
+    .await
+}
+
+/// Places a test using the effective structure rotation while storing the separate
+/// controller rotation in TestInstanceBlockEntity data, as vanilla does for
+/// `/test run ... rotationSteps`.
+#[expect(clippy::too_many_arguments)]
+pub async fn place_structure_with_controller_rotation(
+    world: &dyn GameTestWorld,
+    template: &StructureTemplate,
+    test_id: &str,
+    rotation: TestRotation,
+    controller_rotation: TestRotation,
+    test_x: i32,
+    test_y: Option<i32>,
+    test_z: i32,
+    padding: i32,
+) -> GameTestResult<PlacedStructure> {
     // TestInstanceBlockEntity.getStructurePos offsets the controller by padding and
     // then by STRUCTURE_OFFSET. The controller itself is outside the structure box.
     // Reruns retain the original controller Y instead of querying a heightmap again.
@@ -111,13 +140,16 @@ pub async fn place_structure(
         )
         .await?;
 
-    // This mirrors TestInstanceBlockEntity.Data. The stored rotation is the extra
-    // controller rotation. /test run has no extra rotation, so the test definition's
-    // rotation is applied to the template while this remains "none" as in vanilla.
+    // TestInstanceBlockEntity.Data stores only the extra controller rotation. The
+    // client combines this with the test definition's base rotation from the synced
+    // minecraft:test_instance registry.
     let mut data = NbtCompound::new();
     data.put_string("test", test_id.to_string());
     data.put("size", NbtTag::IntArray(source_size.to_vec()));
-    data.put_string("rotation", TestRotation::None.serialized_name().to_string());
+    data.put_string(
+        "rotation",
+        controller_rotation.serialized_name().to_string(),
+    );
     data.put_bool("ignore_entities", false);
     data.put_string("status", "cleared".to_string());
 
