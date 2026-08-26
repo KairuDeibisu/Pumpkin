@@ -664,6 +664,35 @@ impl GameTestWorld for ServerGameTestWorld {
         Ok(())
     }
 
+    async fn clear_scheduled_block_ticks(
+        &self,
+        min: &BlockPos,
+        max: &BlockPos,
+    ) -> GameTestResult<()> {
+        if max.0.x <= min.0.x || max.0.y <= min.0.y || max.0.z <= min.0.z {
+            return Ok(());
+        }
+
+        let min_chunk_x = min.0.x >> 4;
+        let max_chunk_x = (max.0.x - 1) >> 4;
+        let min_chunk_z = min.0.z >> 4;
+        let max_chunk_z = (max.0.z - 1) >> 4;
+
+        for chunk_x in min_chunk_x..=max_chunk_x {
+            for chunk_z in min_chunk_z..=max_chunk_z {
+                let chunk_pos =
+                    pumpkin_util::math::vector2::Vector2::new(chunk_x, chunk_z);
+                if let Some(chunk) = self.world.level.loaded_chunks.get(&chunk_pos) {
+                    chunk.block_ticks.clear_area(min, max);
+                    if !chunk.block_ticks.has_ticks() && !chunk.fluid_ticks.has_ticks() {
+                        self.world.level.chunks_with_scheduled_ticks.remove(&chunk_pos);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn set_test_instance_running(&self, position: &BlockPos) -> GameTestResult<()> {
         let entity = self.test_instance_block_entity(position)?;
         entity.clear_error_markers().await;
