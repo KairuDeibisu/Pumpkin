@@ -18,7 +18,7 @@ use crate::command::tree::{CommandTree, RawArgs};
 use crate::command::{CommandError, CommandExecutor, CommandResult, CommandSender};
 use crate::server::Server;
 use crate::server::ticker::{
-    GameTestBatchReport, GameTestRequest, GameTestRetryOptions, enqueue_game_test,
+    GameTestBatchReport, GameTestRequest, GameTestRetryOptions, enqueue_game_test, stop_game_tests,
 };
 
 const NAMES: [&str; 1] = ["test"];
@@ -186,6 +186,22 @@ impl CommandExecutor for RunExecutor {
     }
 }
 
+struct StopExecutor;
+
+impl CommandExecutor for StopExecutor {
+    fn execute<'a>(
+        &'a self,
+        _sender: &'a CommandSender,
+        _server: &'a Server,
+        _args: &'a ConsumedArgs<'a>,
+    ) -> CommandResult<'a> {
+        Box::pin(async move {
+            stop_game_tests().await;
+            Ok(1)
+        })
+    }
+}
+
 pub fn init_command_tree() -> CommandTree {
     let tests_per_row = argument(
         ARG_TESTS_PER_ROW,
@@ -211,7 +227,9 @@ pub fn init_command_tree() -> CommandTree {
         .execute(RunExecutor)
         .then(number_of_times);
 
-    CommandTree::new(NAMES, DESCRIPTION).then(literal("run").then(tests))
+    CommandTree::new(NAMES, DESCRIPTION)
+        .then(literal("run").then(tests))
+        .then(literal("stop").execute(StopExecutor))
 }
 
 pub fn register(dispatcher: &mut LegacyCommandDispatcher, registry: &PermissionRegistry) {
