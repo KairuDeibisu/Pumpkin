@@ -42,8 +42,9 @@ impl JavaClient {
                 // ResourceSelectorArgument validates /test names against this registry on the
                 // client, so always provide it even when the static table omitted it.
                 if !sent_test_instance {
+                    let test_instance = "minecraft:test_instance".to_string();
                     let packet = CRegistryData::new(
-                        &"minecraft:test_instance".to_string(),
+                        &test_instance,
                         &test_instance_entries,
                     );
                     if let Ok(data) = Self::serialize_packet_for_version(&packet, version) {
