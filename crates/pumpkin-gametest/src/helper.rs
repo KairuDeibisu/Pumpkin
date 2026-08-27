@@ -32,7 +32,7 @@ impl<'a> GameTestHelper<'a> {
     }
 
     #[must_use]
-    pub fn absolute_pos(&self, relative: &BlockPos) -> BlockPos {
+    pub const fn absolute_pos(&self, relative: &BlockPos) -> BlockPos {
         self.placement.transform(relative)
     }
 

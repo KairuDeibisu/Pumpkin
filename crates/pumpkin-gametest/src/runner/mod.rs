@@ -10,8 +10,8 @@ use crate::block_based::BlockBasedTest;
 use crate::error::{GameTestError, GameTestResult};
 use crate::model::TestRotation;
 use crate::structure::{
-    PlacedStructure, StructureTemplate, TestBlockMode, clear_success_entities, encase_structure,
-    place_structure_with_controller_rotation, remove_barriers,
+    PlacedStructure, StructureTemplate, TestBlockMode, TestPosition, clear_success_entities,
+    encase_structure, place_structure_with_controller_rotation, remove_barriers,
 };
 use crate::world::GameTestWorld;
 
@@ -123,9 +123,7 @@ impl TestRun {
             self.test.id(),
             self.effective_rotation,
             self.extra_rotation,
-            self.test_x,
-            self.test_y,
-            self.test_z,
+            TestPosition::new(self.test_x, self.test_y, self.test_z),
             self.test.definition().padding,
         )
         .await;

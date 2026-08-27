@@ -43,7 +43,7 @@ impl TestRotation {
     }
 
     /// Combines the datapack's base rotation with an additional controller rotation.
-    /// This mirrors vanilla `Rotation::getRotated`/GameTestInfo extra rotation.
+    /// This mirrors vanilla `Rotation::getRotated`/`GameTestInfo` extra rotation.
     #[must_use]
     pub const fn then(self, extra: Self) -> Self {
         match self.as_block_rotation().then(extra.as_block_rotation()) {
@@ -65,7 +65,7 @@ impl TestRotation {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct TestDefinition {
     #[serde(rename = "type")]
     pub instance_type: TestType,

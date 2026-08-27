@@ -129,7 +129,7 @@ impl StructureTemplate {
     }
 
     #[must_use]
-    pub fn block_count(&self) -> usize {
+    pub const fn block_count(&self) -> usize {
         self.blocks.len()
     }
 }

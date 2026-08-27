@@ -31,7 +31,7 @@ pub trait GameTestWorld: Send + Sync {
     ) -> GameTestResult<()>;
 
     /// Removes all non-player entities intersecting the half-open world-space box
-    /// `[min, max)`. Vanilla does this before every GameTest structure placement,
+    /// `[min, max)`. Vanilla does this before every `GameTest` structure placement,
     /// and again around a successful structure, so reruns never inherit entities
     /// spawned by the previous attempt.
     async fn clear_non_player_entities(
@@ -41,7 +41,7 @@ pub trait GameTestWorld: Send + Sync {
     ) -> GameTestResult<()>;
 
     /// Removes scheduled block ticks inside `[min, max)` after a structure has been
-    /// replaced, matching vanilla GameTest placement cleanup.
+    /// replaced, matching vanilla `GameTest` placement cleanup.
     async fn clear_scheduled_block_ticks(
         &self,
         min: &BlockPos,

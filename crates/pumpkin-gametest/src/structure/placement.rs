@@ -10,6 +10,20 @@ use crate::world::GameTestWorld;
 
 const STRUCTURE_OFFSET: [i32; 3] = [0, 1, 1];
 
+#[derive(Clone, Copy, Debug)]
+pub struct TestPosition {
+    x: i32,
+    y: Option<i32>,
+    z: i32,
+}
+
+impl TestPosition {
+    #[must_use]
+    pub const fn new(x: i32, y: Option<i32>, z: i32) -> Self {
+        Self { x, y, z }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PlacedStructure {
     test_instance_pos: BlockPos,
@@ -58,7 +72,7 @@ impl PlacedStructure {
     }
 
     #[must_use]
-    pub fn transform(&self, relative: &BlockPos) -> BlockPos {
+    pub const fn transform(&self, relative: &BlockPos) -> BlockPos {
         let transformed = self.rotation.as_block_rotation().transform_pos(
             Vector3::new(relative.0.x, relative.0.y, relative.0.z),
             Vector3::new(self.source_size[0], self.source_size[1], self.source_size[2]),
@@ -76,9 +90,7 @@ pub async fn place_structure(
     template: &StructureTemplate,
     test_id: &str,
     rotation: TestRotation,
-    test_x: i32,
-    test_y: Option<i32>,
-    test_z: i32,
+    position: TestPosition,
     padding: i32,
 ) -> GameTestResult<PlacedStructure> {
     place_structure_with_controller_rotation(
@@ -87,37 +99,33 @@ pub async fn place_structure(
         test_id,
         rotation,
         TestRotation::None,
-        test_x,
-        test_y,
-        test_z,
+        position,
         padding,
     )
     .await
 }
 
-/// Places a test using the effective structure rotation while storing the separate
-/// controller rotation in TestInstanceBlockEntity data, as vanilla does for
-/// `/test run ... rotationSteps`.
-#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
+/// Places a test using the effective structure rotation.
+///
+/// The separate controller rotation is stored in `TestInstanceBlockEntity` data, as
+/// vanilla does for `/test run ... rotationSteps`.
 pub async fn place_structure_with_controller_rotation(
     world: &dyn GameTestWorld,
     template: &StructureTemplate,
     test_id: &str,
     rotation: TestRotation,
     controller_rotation: TestRotation,
-    test_x: i32,
-    test_y: Option<i32>,
-    test_z: i32,
+    position: TestPosition,
     padding: i32,
 ) -> GameTestResult<PlacedStructure> {
     // TestInstanceBlockEntity.getStructurePos offsets the controller by padding and
     // then by STRUCTURE_OFFSET. The controller itself is outside the structure box.
     // Reruns retain the original controller Y instead of querying a heightmap again.
-    let test_y = match test_y {
+    let test_y = match position.y {
         Some(test_y) => test_y,
-        None => world.surface_height(test_x, test_z).await + 1,
+        None => world.surface_height(position.x, position.z).await + 1,
     };
-    let test_instance_pos = BlockPos::new(test_x, test_y, test_z);
+    let test_instance_pos = BlockPos::new(position.x, test_y, position.z);
     let origin = BlockPos::new(
         test_instance_pos.0.x + padding + STRUCTURE_OFFSET[0],
         test_instance_pos.0.y + padding + STRUCTURE_OFFSET[1],
@@ -220,8 +228,9 @@ pub async fn place_structure_with_controller_rotation(
     ))
 }
 
-/// Encloses the structure with the same one-block barrier shell used by Vanilla
-/// `TestInstanceBlockEntity::encaseStructure`. The floor and four walls are always
+/// Encloses the structure with the same one-block barrier shell used by Vanilla.
+///
+/// The floor and four walls from `TestInstanceBlockEntity::encaseStructure` are always
 /// present; the ceiling is omitted when the test requests sky access.
 pub async fn encase_structure(
     world: &dyn GameTestWorld,
@@ -244,9 +253,10 @@ pub async fn encase_structure(
     .await
 }
 
-/// Removes the one-block barrier shell after a successful test, matching
-/// `GameTestRunner` calling `TestInstanceBlockEntity::removeBarriers` in vanilla.
-/// Only barrier blocks are removed so test blocks placed on the boundary are preserved.
+/// Removes the one-block barrier shell after a successful test.
+///
+/// This matches `GameTestRunner` calling `TestInstanceBlockEntity::removeBarriers` in
+/// vanilla. Only barrier blocks are removed so test blocks on the boundary are preserved.
 pub async fn remove_barriers(
     world: &dyn GameTestWorld,
     placement: &PlacedStructure,
