@@ -1,6 +1,5 @@
 pub mod function_loader;
 pub mod recipe_loader;
-pub mod test_instance;
 
 use std::collections::HashMap;
 use std::fs;
@@ -8,17 +7,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::{info, warn};
 
-use pumpkin_data::registry::RegistryEntryData;
-use pumpkin_nbt::{NbtCompound, nbt_compress::read_gzip_compound_tag};
 use pumpkin_protocol::codec::recipe::DynamicRecipe;
 
 use crate::command::context::command_source::CommandSource;
 use crate::server::Server;
 use crate::server::recipe::RecipeManager;
-
-use self::test_instance::{
-    TestInstance, TestInstanceRegistry, load_test_instances_from_dir, to_registry_entry,
-};
 
 #[derive(Clone, Debug)]
 pub struct LoadedDatapack {
@@ -31,11 +24,29 @@ pub struct LoadedDatapack {
     pub function_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DatapackInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub pack_format: u32,
+    pub is_enabled: bool,
+    pub recipe_count: usize,
+    pub function_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DatapackEnablePosition {
+    First,
+    Last,
+    Before(String),
+    After(String),
+}
+
 pub struct DatapackManager {
     loaded_packs: RwLock<Vec<LoadedDatapack>>,
     functions: RwLock<HashMap<String, Vec<String>>>,
     function_tags: RwLock<HashMap<String, Vec<String>>>,
-    test_instances: RwLock<TestInstanceRegistry>,
 }
 
 impl Default for DatapackManager {
@@ -51,7 +62,6 @@ impl DatapackManager {
             loaded_packs: RwLock::new(Vec::new()),
             functions: RwLock::new(HashMap::new()),
             function_tags: RwLock::new(HashMap::new()),
-            test_instances: RwLock::new(HashMap::new()),
         }
     }
 
@@ -66,7 +76,6 @@ impl DatapackManager {
         let mut all_recipes: Vec<DynamicRecipe> = Vec::new();
         let mut all_functions: HashMap<String, Vec<String>> = HashMap::new();
         let mut all_function_tags: HashMap<String, Vec<String>> = HashMap::new();
-        let mut all_test_instances = TestInstanceRegistry::new();
 
         if datapacks_dir.is_dir() {
             let Ok(entries) = fs::read_dir(&datapacks_dir) else {
@@ -95,17 +104,61 @@ impl DatapackManager {
 
                 let (description, pack_format) = read_pack_mcmeta(&pack_path);
 
-                let (pack_recipe_count, pack_function_count, pack_test_instance_count) =
-                    load_pack_contents(
-                        &pack_path,
-                        &mut all_recipes,
-                        &mut all_functions,
-                        &mut all_function_tags,
-                        &mut all_test_instances,
-                    );
+                let data_dir = pack_path.join("data");
+                let mut pack_recipe_count = 0;
+                let mut pack_function_count = 0;
+
+                if data_dir.is_dir()
+                    && let Ok(ns_entries) = fs::read_dir(&data_dir)
+                {
+                    for ns_entry in ns_entries.flatten() {
+                        let ns_path = ns_entry.path();
+                        if !ns_path.is_dir() {
+                            continue;
+                        }
+                        let namespace = ns_entry.file_name().to_string_lossy().to_string();
+
+                        // Load recipes
+                        for recipe_sub in ["recipe", "recipes"] {
+                            let recipe_dir = ns_path.join(recipe_sub);
+                            if recipe_dir.is_dir() {
+                                load_recipes_from_dir(
+                                    &namespace,
+                                    &recipe_dir,
+                                    &mut all_recipes,
+                                    &mut pack_recipe_count,
+                                );
+                            }
+                        }
+
+                        // Load functions
+                        for fn_sub in ["function", "functions"] {
+                            let fn_dir = ns_path.join(fn_sub);
+                            if fn_dir.is_dir() {
+                                let before = all_functions.len();
+                                function_loader::load_functions_from_dir(
+                                    &namespace,
+                                    &fn_dir,
+                                    &mut all_functions,
+                                );
+                                pack_function_count += all_functions.len() - before;
+                            }
+                        }
+
+                        // Load tags
+                        let tags_dir = ns_path.join("tags");
+                        if tags_dir.is_dir() {
+                            function_loader::load_function_tags_from_dir(
+                                &namespace,
+                                &tags_dir,
+                                &mut all_function_tags,
+                            );
+                        }
+                    }
+                }
 
                 info!(
-                    "Loaded datapack '{file_name}': {pack_recipe_count} recipe(s), {pack_function_count} function(s), {pack_test_instance_count} test instance(s)"
+                    "Loaded datapack '{file_name}': {pack_recipe_count} recipe(s), {pack_function_count} function(s)"
                 );
 
                 loaded_packs_vec.push(LoadedDatapack {
@@ -133,10 +186,6 @@ impl DatapackManager {
             .function_tags
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = all_function_tags;
-        *self
-            .test_instances
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = all_test_instances;
     }
 
     pub fn get_loaded_packs(&self) -> Vec<LoadedDatapack> {
@@ -151,93 +200,6 @@ impl DatapackManager {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
-    }
-
-    pub fn get_test_instance(&self, name: &str) -> Option<TestInstance> {
-        self.test_instances
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(name)
-            .cloned()
-    }
-
-    pub fn get_test_instance_names(&self) -> Vec<String> {
-        let test_instances = self
-            .test_instances
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut names: Vec<_> = test_instances.keys().cloned().collect();
-        names.sort_unstable();
-        names
-    }
-
-    /// Returns datapack test instances in the protocol's synced-registry entry format.
-    /// The vanilla Test Instance Block renderer resolves required/padding/base rotation
-    /// through this registry using the controller's `data.test` resource key.
-    pub fn get_test_instance_registry_entries(&self) -> Vec<RegistryEntryData> {
-        let test_instances = self
-            .test_instances
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut entries: Vec<_> = test_instances
-            .iter()
-            .map(|(id, instance)| to_registry_entry(id.clone(), instance))
-            .collect();
-        entries.sort_unstable_by(|left, right| left.entry_id.cmp(&right.entry_id));
-        entries
-    }
-
-    /// Loads a Java Edition structure NBT from the currently enabled datapacks.
-    ///
-    /// Structure identifiers are resource locations such as
-    /// `minecraft:village/plains/houses/plains_small_house_1`. Both the current
-    /// `structure` directory and the legacy `structures` directory are checked.
-    pub async fn load_structure(&self, resource_location: &str) -> Result<NbtCompound, String> {
-        let (namespace, path) = parse_structure_resource_location(resource_location)?;
-
-        let nbt_path = {
-            let loaded_packs = self
-                .loaded_packs
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut nbt_path = None;
-
-            // Later-loaded packs take precedence, matching the overwrite behavior
-            // used by the other datapack registries.
-            'packs: for pack in loaded_packs.iter().rev() {
-                for structure_dir in ["structure", "structures"] {
-                    let base = pack
-                        .root_path
-                        .join("data")
-                        .join(namespace)
-                        .join(structure_dir);
-
-                    let candidate = base.join(format!("{path}.nbt"));
-                    if candidate.is_file() {
-                        nbt_path = Some(candidate);
-                        break 'packs;
-                    }
-                }
-            }
-            nbt_path
-        };
-
-        let Some(nbt_path) = nbt_path else {
-            return Err(format!(
-                "Structure '{resource_location}' was not found in any enabled datapack"
-            ));
-        };
-
-        // Gzip/NBT decoding is synchronous, so keep it off the async server task.
-        let display_path = nbt_path.display().to_string();
-        tokio::task::spawn_blocking(move || {
-            let file = fs::File::open(&nbt_path)
-                .map_err(|error| format!("Failed to open structure '{display_path}': {error}"))?;
-            read_gzip_compound_tag(file)
-                .map_err(|error| format!("Failed to parse structure '{display_path}': {error}"))
-        })
-        .await
-        .map_err(|error| format!("Structure loader task failed: {error}"))?
     }
 
     pub fn get_function_names(&self) -> Vec<String> {
@@ -301,117 +263,314 @@ impl DatapackManager {
 
         Ok(total_executed)
     }
-}
 
-fn parse_structure_resource_location(resource_location: &str) -> Result<(&str, &str), String> {
-    let (namespace, raw_path) = resource_location
-        .split_once(':')
-        .unwrap_or(("minecraft", resource_location));
+    pub fn get_all_known_packs(server: &Server) -> Vec<String> {
+        let mut packs = Vec::new();
+        packs.push("vanilla".to_string());
 
-    if namespace.is_empty()
-        || !namespace.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-' | b'.')
-        })
-    {
-        return Err(format!(
-            "Invalid structure namespace in '{resource_location}'"
-        ));
-    }
-
-    let path = raw_path.strip_suffix(".nbt").unwrap_or(raw_path);
-    if path.is_empty()
-        || path
-            .split('/')
-            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
-        || !path.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'_' | b'-' | b'.' | b'/')
-        })
-    {
-        return Err(format!("Invalid structure path in '{resource_location}'"));
-    }
-
-    Ok((namespace, path))
-}
-
-/// Loads recipes, functions, function tags, and test instances from a single
-/// datapack directory, returning per-pack counts as `(recipes, functions, test_instances)`.
-fn load_pack_contents(
-    pack_path: &Path,
-    all_recipes: &mut Vec<DynamicRecipe>,
-    all_functions: &mut HashMap<String, Vec<String>>,
-    all_function_tags: &mut HashMap<String, Vec<String>>,
-    all_test_instances: &mut TestInstanceRegistry,
-) -> (usize, usize, usize) {
-    let data_dir = pack_path.join("data");
-    let mut pack_recipe_count = 0;
-    let mut pack_function_count = 0;
-    let mut pack_test_instance_count = 0;
-
-    if data_dir.is_dir()
-        && let Ok(ns_entries) = fs::read_dir(&data_dir)
-    {
-        for ns_entry in ns_entries.flatten() {
-            let ns_path = ns_entry.path();
-            if !ns_path.is_dir() {
-                continue;
-            }
-            let namespace = ns_entry.file_name().to_string_lossy().to_string();
-
-            // Load recipes
-            for recipe_sub in ["recipe", "recipes"] {
-                let recipe_dir = ns_path.join(recipe_sub);
-                if recipe_dir.is_dir() {
-                    load_recipes_from_dir(
-                        &namespace,
-                        &recipe_dir,
-                        all_recipes,
-                        &mut pack_recipe_count,
-                    );
-                }
-            }
-
-            // Load functions
-            for fn_sub in ["function", "functions"] {
-                let fn_dir = ns_path.join(fn_sub);
-                if fn_dir.is_dir() {
-                    let before = all_functions.len();
-                    function_loader::load_functions_from_dir(&namespace, &fn_dir, all_functions);
-                    pack_function_count += all_functions.len() - before;
-                }
-            }
-
-            // Load tags
-            let tags_dir = ns_path.join("tags");
-            if tags_dir.is_dir() {
-                function_loader::load_function_tags_from_dir(
-                    &namespace,
-                    &tags_dir,
-                    all_function_tags,
-                );
-            }
-
-            // Load game test instances
-            let test_instance_dir = ns_path.join("test_instance");
-            if test_instance_dir.is_dir() {
-                pack_test_instance_count += load_test_instances_from_dir(
-                    &namespace,
-                    &test_instance_dir,
-                    all_test_instances,
-                );
+        // Bundled feature packs
+        for bundled in [
+            "trade_rebalance",
+            "minecart_improvements",
+            "redstone_experiments",
+        ] {
+            if !packs.iter().any(|p| p == bundled) {
+                packs.push(bundled.to_string());
             }
         }
+
+        // World datapacks directory
+        let datapacks_dir = server.basic_config.get_world_path().join("datapacks");
+        if let Ok(entries) = fs::read_dir(datapacks_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                if file_name.starts_with('.') {
+                    continue;
+                }
+                if path.is_dir()
+                    || path
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+                {
+                    let pack_name = format!("file/{file_name}");
+                    if !packs.iter().any(|p| p == &pack_name) {
+                        packs.push(pack_name);
+                    }
+                }
+            }
+        }
+
+        let level_info = server.level_info.load();
+        for pack in &level_info.data_packs.enabled {
+            if !packs.iter().any(|p| p == pack) {
+                packs.push(pack.clone());
+            }
+        }
+        for pack in &level_info.data_packs.disabled {
+            if !packs.iter().any(|p| p == pack) {
+                packs.push(pack.clone());
+            }
+        }
+
+        packs
     }
 
-    (
-        pack_recipe_count,
-        pack_function_count,
-        pack_test_instance_count,
-    )
+    pub fn get_enabled_packs(server: &Server) -> Vec<String> {
+        server.level_info.load().data_packs.enabled.clone()
+    }
+
+    pub fn get_available_packs(server: &Server) -> Vec<String> {
+        let enabled = Self::get_enabled_packs(server);
+        let all = Self::get_all_known_packs(server);
+        all.into_iter().filter(|p| !enabled.contains(p)).collect()
+    }
+
+    pub fn find_pack_name(server: &Server, input: &str) -> Option<String> {
+        let known = Self::get_all_known_packs(server);
+        if let Some(p) = known.iter().find(|p| *p == input) {
+            return Some(p.clone());
+        }
+        let file_input = format!("file/{input}");
+        if let Some(p) = known.iter().find(|p| **p == file_input) {
+            return Some(p.clone());
+        }
+        if let Some(p) = known
+            .iter()
+            .find(|p| p.strip_prefix("file/") == Some(input))
+        {
+            return Some(p.clone());
+        }
+        None
+    }
+
+    pub fn get_pack_info(server: &Server, name_or_id: &str) -> Option<DatapackInfo> {
+        let resolved_name = Self::find_pack_name(server, name_or_id)?;
+        let enabled_packs = Self::get_enabled_packs(server);
+        let is_enabled = enabled_packs.contains(&resolved_name);
+
+        let loaded = server.datapack_manager.get_loaded_packs();
+        if let Some(pack) = loaded
+            .iter()
+            .find(|p| p.id == resolved_name || p.name == resolved_name)
+        {
+            return Some(DatapackInfo {
+                id: pack.id.clone(),
+                name: pack.name.clone(),
+                description: pack.description.clone(),
+                pack_format: pack.pack_format,
+                is_enabled,
+                recipe_count: pack.recipe_count,
+                function_count: pack.function_count,
+            });
+        }
+
+        let (id, name, description, pack_format) = if resolved_name == "vanilla" {
+            (
+                "vanilla".to_string(),
+                "vanilla".to_string(),
+                "The default data pack".to_string(),
+                61,
+            )
+        } else if let Some(stripped) = resolved_name.strip_prefix("file/") {
+            let pack_path = server
+                .basic_config
+                .get_world_path()
+                .join("datapacks")
+                .join(stripped);
+            let (desc, format) = read_pack_mcmeta(&pack_path);
+            (resolved_name.clone(), stripped.to_string(), desc, format)
+        } else {
+            (
+                resolved_name.clone(),
+                resolved_name.clone(),
+                format!("Bundled datapack: {resolved_name}"),
+                61,
+            )
+        };
+
+        Some(DatapackInfo {
+            id,
+            name,
+            description,
+            pack_format,
+            is_enabled,
+            recipe_count: 0,
+            function_count: 0,
+        })
+    }
+
+    pub fn list_all_packs(server: &Server) -> Vec<DatapackInfo> {
+        let all = Self::get_all_known_packs(server);
+        all.into_iter()
+            .filter_map(|p| Self::get_pack_info(server, &p))
+            .collect()
+    }
+
+    pub fn list_enabled_packs(server: &Server) -> Vec<DatapackInfo> {
+        let enabled = Self::get_enabled_packs(server);
+        enabled
+            .into_iter()
+            .filter_map(|p| Self::get_pack_info(server, &p))
+            .collect()
+    }
+
+    pub fn list_available_packs(server: &Server) -> Vec<DatapackInfo> {
+        let available = Self::get_available_packs(server);
+        available
+            .into_iter()
+            .filter_map(|p| Self::get_pack_info(server, &p))
+            .collect()
+    }
+
+    pub fn is_pack_enabled(server: &Server, name: &str) -> bool {
+        let Some(resolved) = Self::find_pack_name(server, name) else {
+            return false;
+        };
+        Self::get_enabled_packs(server).contains(&resolved)
+    }
+
+    pub fn enable_pack(
+        server: &Arc<Server>,
+        name: &str,
+        position: DatapackEnablePosition,
+    ) -> Result<(), String> {
+        let Some(resolved_name) = Self::find_pack_name(server, name) else {
+            return Err(format!("Unknown datapack '{name}'"));
+        };
+
+        let enabled = Self::get_enabled_packs(server);
+        if enabled.contains(&resolved_name) {
+            return Err(format!("Datapack '{resolved_name}' is already enabled"));
+        }
+
+        let target = resolved_name;
+        match position {
+            DatapackEnablePosition::First => {
+                server.level_info.rcu(|level_info| {
+                    let mut new_info = (**level_info).clone();
+                    new_info.data_packs.disabled.retain(|p| p != &target);
+                    new_info.data_packs.enabled.retain(|p| p != &target);
+                    new_info.data_packs.enabled.insert(0, target.clone());
+                    new_info
+                });
+            }
+            DatapackEnablePosition::Last => {
+                server.level_info.rcu(|level_info| {
+                    let mut new_info = (**level_info).clone();
+                    new_info.data_packs.disabled.retain(|p| p != &target);
+                    new_info.data_packs.enabled.retain(|p| p != &target);
+                    new_info.data_packs.enabled.push(target.clone());
+                    new_info
+                });
+            }
+            DatapackEnablePosition::Before(existing_name) => {
+                let Some(existing_pack) = Self::find_pack_name(server, &existing_name) else {
+                    return Err(format!("Unknown existing datapack '{existing_name}'"));
+                };
+                if !enabled.contains(&existing_pack) {
+                    return Err(format!("Datapack '{existing_pack}' is not enabled"));
+                }
+                server.level_info.rcu(|level_info| {
+                    let mut new_info = (**level_info).clone();
+                    new_info.data_packs.disabled.retain(|p| p != &target);
+                    new_info.data_packs.enabled.retain(|p| p != &target);
+                    if let Some(idx) = new_info
+                        .data_packs
+                        .enabled
+                        .iter()
+                        .position(|p| p == &existing_pack)
+                    {
+                        new_info.data_packs.enabled.insert(idx, target.clone());
+                    } else {
+                        new_info.data_packs.enabled.push(target.clone());
+                    }
+                    new_info
+                });
+            }
+            DatapackEnablePosition::After(existing_name) => {
+                let Some(existing_pack) = Self::find_pack_name(server, &existing_name) else {
+                    return Err(format!("Unknown existing datapack '{existing_name}'"));
+                };
+                if !enabled.contains(&existing_pack) {
+                    return Err(format!("Datapack '{existing_pack}' is not enabled"));
+                }
+                server.level_info.rcu(|level_info| {
+                    let mut new_info = (**level_info).clone();
+                    new_info.data_packs.disabled.retain(|p| p != &target);
+                    new_info.data_packs.enabled.retain(|p| p != &target);
+                    if let Some(idx) = new_info
+                        .data_packs
+                        .enabled
+                        .iter()
+                        .position(|p| p == &existing_pack)
+                    {
+                        new_info.data_packs.enabled.insert(idx + 1, target.clone());
+                    } else {
+                        new_info.data_packs.enabled.push(target.clone());
+                    }
+                    new_info
+                });
+            }
+        }
+
+        if let Err(err) = server.save_world_info() {
+            tracing::error!("Failed to save world info: {err}");
+        }
+
+        server.reload_datapacks(server);
+        Ok(())
+    }
+
+    pub fn disable_pack(server: &Arc<Server>, name: &str) -> Result<(), String> {
+        let Some(target_pack) = Self::find_pack_name(server, name) else {
+            return Err(format!("Unknown datapack '{name}'"));
+        };
+
+        let enabled = Self::get_enabled_packs(server);
+        if !enabled.contains(&target_pack) {
+            return Err(format!("Datapack '{target_pack}' is not enabled"));
+        }
+
+        if target_pack == "vanilla" {
+            return Err("Cannot disable the default vanilla datapack".to_string());
+        }
+
+        let target = target_pack;
+        server.level_info.rcu(|level_info| {
+            let mut new_info = (**level_info).clone();
+            new_info.data_packs.enabled.retain(|p| p != &target);
+            if !new_info.data_packs.disabled.contains(&target) {
+                new_info.data_packs.disabled.push(target.clone());
+            }
+            new_info
+        });
+
+        if let Err(err) = server.save_world_info() {
+            tracing::error!("Failed to save world info: {err}");
+        }
+
+        server.reload_datapacks(server);
+        Ok(())
+    }
+
+    pub fn reload(server: &Arc<Server>) -> Result<(), String> {
+        server.reload_datapacks(server);
+        Ok(())
+    }
+
+    pub fn execute_function_from_console(
+        server: &Arc<Server>,
+        name: &str,
+    ) -> Result<usize, String> {
+        let source = crate::command::CommandSender::Console.into_source(server);
+        server
+            .datapack_manager
+            .execute_function(server, &source, name)
+    }
 }
 
-fn read_pack_mcmeta(pack_path: &Path) -> (String, u32) {
+pub fn read_pack_mcmeta(pack_path: &Path) -> (String, u32) {
     let mcmeta_path = pack_path.join("pack.mcmeta");
     if let Ok(content) = fs::read_to_string(mcmeta_path)
         && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
