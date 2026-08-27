@@ -440,14 +440,15 @@ impl Server {
 
         info!("All worlds loaded successfully.");
 
-        const PACK_NAME: &str = "pumpkin-unit-test-example";
         if server.advanced_config.gametest.load_example_tests {
             info!("Loading example gametests...");
 
             let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../pumpkin-gametest/test-data/datapacks")
-                .join(PACK_NAME);
-            let destination = world_path.join("datapacks").join(PACK_NAME);
+                .join(server.advanced_config.gametest.example_pack_name.clone());
+            let destination = world_path
+                .join("datapacks")
+                .join(server.advanced_config.gametest.example_pack_name.clone());
 
             if let Err(err) = copy_dir_all(&source, &destination) {
                 error!("Failed to copy example gametest datapack: {err}");
@@ -457,7 +458,10 @@ impl Server {
 
         let mut enabled_packs = server.level_info.load().data_packs.enabled.clone();
         if server.advanced_config.gametest.load_example_tests {
-            let pack = format!("file/{PACK_NAME}");
+            let pack = format!(
+                "file/{}",
+                server.advanced_config.gametest.example_pack_name.clone()
+            );
 
             if !enabled_packs.contains(&pack) {
                 enabled_packs.push(pack);
@@ -1444,7 +1448,7 @@ impl Server {
 fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
 
-    for entry in fs::read_dir(&src)? {
+    for entry in fs::read_dir(src)? {
         let entry = entry?;
         let ty = entry.file_type()?;
         let destination = dst.join(entry.file_name());
@@ -1452,7 +1456,7 @@ fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
         if ty.is_dir() {
             copy_dir_all(&entry.path(), &destination)?;
         } else {
-            fs::copy(&entry.path(), &destination)?;
+            fs::copy(entry.path(), &destination)?;
         }
     }
 
