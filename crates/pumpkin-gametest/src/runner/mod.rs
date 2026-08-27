@@ -43,14 +43,7 @@ impl TestRun {
         test_x: i32,
         test_z: i32,
     ) -> Self {
-        Self::new_with_extra_rotation(
-            test,
-            world,
-            template,
-            test_x,
-            test_z,
-            TestRotation::None,
-        )
+        Self::new_with_extra_rotation(test, world, template, test_x, test_z, TestRotation::None)
     }
 
     #[must_use]
@@ -309,11 +302,7 @@ impl TestRun {
             let message = error.to_string();
             if let Err(controller_error) = self
                 .world
-                .set_test_instance_failure(
-                    placement.test_instance_pos(),
-                    &message,
-                    marker,
-                )
+                .set_test_instance_failure(placement.test_instance_pos(), &message, marker)
                 .await
             {
                 self.state = TestState::Failed {

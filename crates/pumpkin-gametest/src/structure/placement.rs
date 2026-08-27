@@ -75,7 +75,11 @@ impl PlacedStructure {
     pub const fn transform(&self, relative: &BlockPos) -> BlockPos {
         let transformed = self.rotation.as_block_rotation().transform_pos(
             Vector3::new(relative.0.x, relative.0.y, relative.0.z),
-            Vector3::new(self.source_size[0], self.source_size[1], self.source_size[2]),
+            Vector3::new(
+                self.source_size[0],
+                self.source_size[1],
+                self.source_size[2],
+            ),
         );
         BlockPos::new(
             self.origin.0.x + transformed.x,
@@ -133,9 +137,11 @@ pub async fn place_structure_with_controller_rotation(
     );
 
     let source_size = template.size();
-    let rotated_size = rotation
-        .as_block_rotation()
-        .transform_size(Vector3::new(source_size[0], source_size[1], source_size[2]));
+    let rotated_size = rotation.as_block_rotation().transform_size(Vector3::new(
+        source_size[0],
+        source_size[1],
+        source_size[2],
+    ));
     let size = [rotated_size.x, rotated_size.y, rotated_size.z];
 
     // Vanilla TestInstanceBlockEntity::placeStructure clears non-player entities
@@ -315,11 +321,8 @@ where
     for x in low.0.x..=high.0.x {
         for y in low.0.y..=high.0.y {
             for z in low.0.z..=high.0.z {
-                let is_wall_or_floor = x == low.0.x
-                    || x == high.0.x
-                    || z == low.0.z
-                    || z == high.0.z
-                    || y == low.0.y;
+                let is_wall_or_floor =
+                    x == low.0.x || x == high.0.x || z == low.0.z || z == high.0.z || y == low.0.y;
                 let is_ceiling = y == high.0.y;
                 if !is_wall_or_floor && (sky_access || !is_ceiling) {
                     continue;

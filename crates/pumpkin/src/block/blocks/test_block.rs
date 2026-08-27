@@ -1,4 +1,3 @@
-use futures::executor::block_on;
 use pumpkin_data::{Block, BlockId};
 
 use crate::block::blocks::redstone::block_receives_redstone_power;
@@ -28,7 +27,7 @@ impl BlockBehaviour for TestBlock {
         // TestBlock.neighborChanged: START is an output-only test block. Every
         // other mode triggers exactly once on the rising edge and only rearms
         // after the incoming signal falls again.
-        if block_on(test_block.mode()) == TestBlockMode::Start {
+        if test_block.mode() == TestBlockMode::Start {
             return;
         }
 
@@ -36,7 +35,7 @@ impl BlockBehaviour for TestBlock {
         let is_powered = test_block.is_powered();
         if should_trigger && !is_powered {
             test_block.set_powered(true);
-            block_on(test_block.trigger(args.world));
+            test_block.trigger(args.world);
         } else if !should_trigger && is_powered {
             test_block.set_powered(false);
         }
@@ -49,7 +48,7 @@ impl BlockBehaviour for TestBlock {
         let Some(test_block) = entity.as_any().downcast_ref::<TestBlockBlockEntity>() else {
             return;
         };
-        block_on(test_block.reset(args.world));
+        test_block.reset(args.world);
     }
 
     fn emits_redstone_power(&self, _args: EmitsRedstonePowerArgs<'_>) -> bool {
@@ -67,7 +66,7 @@ impl BlockBehaviour for TestBlock {
             return 0;
         };
 
-        if block_on(test_block.mode()) == TestBlockMode::Start && test_block.is_powered() {
+        if test_block.mode() == TestBlockMode::Start && test_block.is_powered() {
             15
         } else {
             0

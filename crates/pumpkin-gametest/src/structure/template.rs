@@ -94,9 +94,7 @@ impl StructureTemplate {
                 ))
             })?;
             let state_index = usize::try_from(state_index).map_err(|_| {
-                invalid_structure(format!(
-                    "Structure block {index} has negative state index"
-                ))
+                invalid_structure(format!("Structure block {index} has negative state index"))
             })?;
             let palette_entry = palette.get(state_index).copied().ok_or_else(|| {
                 invalid_structure(format!(
@@ -146,19 +144,13 @@ fn read_vec3(compound: &NbtCompound, name: &str) -> GameTestResult<[i32; 3]> {
 
     Ok([
         x.extract_int().ok_or_else(|| {
-            invalid_structure(format!(
-                "Structure '{name}' contains a non-integer value"
-            ))
+            invalid_structure(format!("Structure '{name}' contains a non-integer value"))
         })?,
         y.extract_int().ok_or_else(|| {
-            invalid_structure(format!(
-                "Structure '{name}' contains a non-integer value"
-            ))
+            invalid_structure(format!("Structure '{name}' contains a non-integer value"))
         })?,
         z.extract_int().ok_or_else(|| {
-            invalid_structure(format!(
-                "Structure '{name}' contains a non-integer value"
-            ))
+            invalid_structure(format!("Structure '{name}' contains a non-integer value"))
         })?,
     ])
 }
@@ -170,16 +162,14 @@ fn resolve_palette(structure: &NbtCompound) -> GameTestResult<Vec<PaletteEntry>>
     let mut states = Vec::with_capacity(palette.len());
 
     for (index, entry) in palette.iter().enumerate() {
-        let entry = entry.extract_compound().ok_or_else(|| {
-            invalid_structure(format!("Palette entry {index} is not a compound"))
-        })?;
-        let name = entry.get_string("Name").ok_or_else(|| {
-            invalid_structure(format!("Palette entry {index} is missing 'Name'"))
-        })?;
+        let entry = entry
+            .extract_compound()
+            .ok_or_else(|| invalid_structure(format!("Palette entry {index} is not a compound")))?;
+        let name = entry
+            .get_string("Name")
+            .ok_or_else(|| invalid_structure(format!("Palette entry {index} is missing 'Name'")))?;
         let block = Block::from_name(name).ok_or_else(|| {
-            invalid_structure(format!(
-                "Unknown block '{name}' in structure palette"
-            ))
+            invalid_structure(format!("Unknown block '{name}' in structure palette"))
         })?;
 
         let mut test_mode = None;
@@ -203,11 +193,13 @@ fn resolve_palette(structure: &NbtCompound) -> GameTestResult<Vec<PaletteEntry>>
                 property_pairs.push((property_name.as_ref(), property_value));
             }
 
-            block.state_from_properties(&property_pairs).ok_or_else(|| {
-                invalid_structure(format!(
-                    "No Pumpkin block state matches palette entry {index} for '{name}'"
-                ))
-            })?
+            block
+                .state_from_properties(&property_pairs)
+                .ok_or_else(|| {
+                    invalid_structure(format!(
+                        "No Pumpkin block state matches palette entry {index} for '{name}'"
+                    ))
+                })?
         } else {
             block.default_state
         };

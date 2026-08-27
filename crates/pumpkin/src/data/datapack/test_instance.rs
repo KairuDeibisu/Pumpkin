@@ -64,8 +64,9 @@ fn load_test_instances_recursive(
 }
 
 /// Encodes the datapack test definition using the same map shape consumed by
-/// `GameTestInstance.CODEC` / `TestData.CODEC` in vanilla. RegistryData expects
-/// an unnamed NBT compound payload for each registry entry.
+/// `GameTestInstance.CODEC` / `TestData.CODEC` in vanilla.
+///
+/// `RegistryData` expects an unnamed NBT compound payload for each registry entry.
 #[must_use]
 pub fn to_registry_entry(entry_id: String, instance: &TestInstance) -> RegistryEntryData {
     let mut nbt = NbtCompound::new();
@@ -98,25 +99,23 @@ fn json_value_to_nbt(value: &Value) -> NbtTag {
     match value {
         Value::Null => NbtTag::String(String::new().into()),
         Value::Bool(value) => NbtTag::Byte(i8::from(*value)),
-        Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                if let Ok(value) = i32::try_from(value) {
-                    NbtTag::Int(value)
-                } else {
-                    NbtTag::Long(value)
-                }
-            } else if let Some(value) = value.as_u64() {
-                if let Ok(value) = i32::try_from(value) {
-                    NbtTag::Int(value)
-                } else if let Ok(value) = i64::try_from(value) {
-                    NbtTag::Long(value)
-                } else {
-                    NbtTag::Double(value as f64)
-                }
-            } else {
-                NbtTag::Double(value.as_f64().unwrap_or_default())
-            }
-        }
+        Value::Number(value) => value.as_i64().map_or_else(
+            || {
+                value.as_u64().map_or_else(
+                    || NbtTag::Double(value.as_f64().unwrap_or_default()),
+                    |value| {
+                        i32::try_from(value).map_or_else(
+                            |_| {
+                                i64::try_from(value)
+                                    .map_or_else(|_| NbtTag::Double(value as f64), NbtTag::Long)
+                            },
+                            NbtTag::Int,
+                        )
+                    },
+                )
+            },
+            |value| i32::try_from(value).map_or(NbtTag::Long(value), NbtTag::Int),
+        ),
         Value::String(value) => NbtTag::String(value.clone().into()),
         Value::Array(values) => NbtTag::List(values.iter().map(json_value_to_nbt).collect()),
         Value::Object(values) => {

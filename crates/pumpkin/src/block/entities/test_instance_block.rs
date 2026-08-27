@@ -128,22 +128,23 @@ impl TestInstanceBlockBlockEntity {
         }
     }
 
-    pub async fn data(&self) -> TestInstanceData {
+    pub fn data(&self) -> TestInstanceData {
         self.data
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
-    pub async fn error_markers(&self) -> Vec<TestInstanceErrorMarker> {
+    pub fn error_markers(&self) -> Vec<TestInstanceErrorMarker> {
         self.error_markers
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
-    pub async fn set_running(&self) {
-        let mut data = self.data
+    pub fn set_running(&self) {
+        let mut data = self
+            .data
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         data.status = TestInstanceStatus::Running;
@@ -151,8 +152,9 @@ impl TestInstanceBlockBlockEntity {
         self.dirty.store(true, Ordering::Release);
     }
 
-    pub async fn set_success(&self) {
-        let mut data = self.data
+    pub fn set_success(&self) {
+        let mut data = self
+            .data
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         data.status = TestInstanceStatus::Finished;
@@ -160,8 +162,9 @@ impl TestInstanceBlockBlockEntity {
         self.dirty.store(true, Ordering::Release);
     }
 
-    pub async fn set_error_message(&self, message: String) {
-        let mut data = self.data
+    pub fn set_error_message(&self, message: String) {
+        let mut data = self
+            .data
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         data.status = TestInstanceStatus::Finished;
@@ -169,7 +172,7 @@ impl TestInstanceBlockBlockEntity {
         self.dirty.store(true, Ordering::Release);
     }
 
-    pub async fn mark_error(&self, position: BlockPos, text: String) {
+    pub fn mark_error(&self, position: BlockPos, text: String) {
         self.error_markers
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -177,8 +180,9 @@ impl TestInstanceBlockBlockEntity {
         self.dirty.store(true, Ordering::Release);
     }
 
-    pub async fn clear_error_markers(&self) {
-        let mut markers = self.error_markers
+    pub fn clear_error_markers(&self) {
+        let mut markers = self
+            .error_markers
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !markers.is_empty() {
@@ -189,8 +193,9 @@ impl TestInstanceBlockBlockEntity {
 
     /// Vanilla's client derives the beacon beam from status, error state, and the
     /// test definition's `required` flag. These ARGB values match 26.2.
-    pub async fn beam_argb(&self, required: bool) -> Option<u32> {
-        let data = self.data
+    pub fn beam_argb(&self, required: bool) -> Option<u32> {
+        let data = self
+            .data
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match data.status {
@@ -236,10 +241,7 @@ impl BlockEntity for TestInstanceBlockBlockEntity {
     where
         Self: Sized,
     {
-        let data = nbt
-            .get_compound("data")
-            .map(parse_data)
-            .unwrap_or_default();
+        let data = nbt.get_compound("data").map(parse_data).unwrap_or_default();
         let error_markers = nbt
             .get_list("errors")
             .map(parse_error_markers)
