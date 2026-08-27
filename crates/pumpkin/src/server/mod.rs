@@ -47,7 +47,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::Arc; 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32};
 use std::{future::Future, sync::atomic::Ordering, time::Duration};
 use tokio::sync::{Mutex, OnceCell};
@@ -449,7 +449,7 @@ impl Server {
                 .join(PACK_NAME);
             let destination = world_path.join("datapacks").join(PACK_NAME);
 
-            if let Err(err) = copy_dir_all(source, destination) {
+            if let Err(err) = copy_dir_all(source, &destination) {
                 error!("Failed to copy example gametest datapack: {err}");
                 std::process::exit(1);
             }
@@ -1441,8 +1441,8 @@ impl Server {
     }
 }
 
-fn copy_dir_all(src: PathBuf, dst: PathBuf) -> std::io::Result<()> {
-    fs::create_dir_all(&dst)?;
+fn copy_dir_all(src: PathBuf, dst: &PathBuf) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
 
     for entry in fs::read_dir(&src)? {
         let entry = entry?;
@@ -1450,7 +1450,7 @@ fn copy_dir_all(src: PathBuf, dst: PathBuf) -> std::io::Result<()> {
         let destination = dst.join(entry.file_name());
 
         if ty.is_dir() {
-            copy_dir_all(entry.path(), destination)?;
+            copy_dir_all(entry.path(), &destination)?;
         } else {
             fs::copy(entry.path(), &destination)?;
         }

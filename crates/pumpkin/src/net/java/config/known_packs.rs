@@ -13,9 +13,8 @@ impl JavaClient {
         if version.supports_configuration_state() {
             self.send_packet(&CFeatureFlags::new(&["minecraft:vanilla".to_string()]))
                 .await;
-            let test_instance_entries = server
-                .datapack_manager
-                .get_test_instance_registry_entries();
+            let test_instance_entries =
+                server.datapack_manager.get_test_instance_registry_entries();
             let registry_packets = tokio::task::spawn_blocking(move || {
                 let registry = Registry::get_synced(version);
                 let mut packets = Vec::new();
@@ -43,10 +42,7 @@ impl JavaClient {
                 // client, so always provide it even when the static table omitted it.
                 if !sent_test_instance {
                     let test_instance = "minecraft:test_instance".to_string();
-                    let packet = CRegistryData::new(
-                        &test_instance,
-                        &test_instance_entries,
-                    );
+                    let packet = CRegistryData::new(&test_instance, &test_instance_entries);
                     if let Ok(data) = Self::serialize_packet_for_version(&packet, version) {
                         packets.push(data);
                     }
