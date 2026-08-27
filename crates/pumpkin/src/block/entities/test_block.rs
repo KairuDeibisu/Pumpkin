@@ -1,9 +1,9 @@
+use pumpkin_nbt::compound::NbtCompound;
+use pumpkin_util::math::position::BlockPos;
 use std::sync::{
     Arc, RwLock,
     atomic::{AtomicBool, Ordering},
 };
-use pumpkin_nbt::compound::NbtCompound;
-use pumpkin_util::math::position::BlockPos;
 use tracing::info;
 
 use crate::world::World;
@@ -54,7 +54,7 @@ impl TestBlockBlockEntity {
     pub const ID: &'static str = "minecraft:test_block";
 
     #[must_use]
-    pub fn new(position: BlockPos) -> Self {
+    pub const fn new(position: BlockPos) -> Self {
         Self {
             position,
             mode: RwLock::new(TestBlockMode::Start),
@@ -65,23 +65,14 @@ impl TestBlockBlockEntity {
         }
     }
 
-    pub async fn mode(&self) -> TestBlockMode {
-        self.mode_sync()
-    }
-
-    pub async fn message(&self) -> String {
-        self.message_sync()
-    }
-
-
-    fn mode_sync(&self) -> TestBlockMode {
+    pub fn mode(&self) -> TestBlockMode {
         *self
             .mode
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn message_sync(&self) -> String {
+    pub fn message(&self) -> String {
         self.message
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -102,34 +93,34 @@ impl TestBlockBlockEntity {
         self.triggered.load(Ordering::Acquire)
     }
 
-    pub async fn trigger(&self, world: &Arc<World>) {
-        let mode = self.mode().await;
+    pub fn trigger(&self, world: &Arc<World>) {
+        let mode = self.mode();
         if mode == TestBlockMode::Start {
             self.set_powered(true);
             world.update_neighbors(&self.position, None);
-            self.log().await;
+            self.log();
             return;
         }
 
         if mode == TestBlockMode::Log {
-            self.log().await;
+            self.log();
         }
 
         self.triggered.store(true, Ordering::Release);
     }
 
-    pub async fn reset(&self, world: &Arc<World>) {
+    pub fn reset(&self, world: &Arc<World>) {
         self.triggered.store(false, Ordering::Release);
-        if self.mode().await == TestBlockMode::Start {
+        if self.mode() == TestBlockMode::Start {
             self.set_powered(false);
             world.update_neighbors(&self.position, None);
         }
     }
 
-    async fn log(&self) {
-        let message = self.message().await;
+    fn log(&self) {
+        let message = self.message();
         if !message.trim().is_empty() {
-            let mode = self.mode().await;
+            let mode = self.mode();
             info!(
                 target: "pumpkin::gametest",
                 mode = mode.serialized_name(),
@@ -170,8 +161,8 @@ impl BlockEntity for TestBlockBlockEntity {
     }
 
     fn write_nbt(&self, nbt: &mut NbtCompound) {
-        nbt.put_string("mode", self.mode_sync().serialized_name().to_string());
-        nbt.put_string("message", self.message_sync());
+        nbt.put_string("mode", self.mode().serialized_name().to_string());
+        nbt.put_string("message", self.message());
         nbt.put_bool("powered", self.is_powered());
     }
 

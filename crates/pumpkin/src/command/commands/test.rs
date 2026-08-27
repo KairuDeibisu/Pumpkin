@@ -60,21 +60,18 @@ impl ArgumentConsumer for TestInstanceArgumentConsumer {
         args: &mut RawArgs<'a>,
     ) -> ConsumeResult<'a> {
         let selector = args.pop().map(|arg| arg.value)?;
-        let names = block_on(server.datapack_manager.get_test_instance_names());
+        let names = server.datapack_manager.get_test_instance_names();
         names
             .iter()
             .any(|name| resource_selector_matches(selector, name))
             .then_some(Arg::Simple(selector))
     }
 
-    fn suggest(
-        &self,
-        _sender: &CommandSender,
-        server: &Server,
-        input: &str,
-    ) -> SuggestResult {
+    fn suggest(&self, _sender: &CommandSender, server: &Server, input: &str) -> SuggestResult {
         let current = current_suggestion_token(input);
-        let suggestions = block_on(server.datapack_manager.get_test_instance_names())
+        let suggestions = server
+            .datapack_manager
+            .get_test_instance_names()
             .into_iter()
             .filter(|name| resource_suggestion_matches(current, name))
             .map(|name| CommandSuggestion::new(name, None))
@@ -104,7 +101,7 @@ impl CommandExecutor for RunExecutor {
         args: &ConsumedArgs,
     ) -> CommandResult {
         let selector = TestInstanceArgumentConsumer::find_arg(args, ARG_TESTS)?;
-        let names = block_on(server.datapack_manager.get_test_instance_names());
+        let names = server.datapack_manager.get_test_instance_names();
         let selected: Vec<_> = names
             .into_iter()
             .filter(|name| resource_selector_matches(selector, name))
@@ -153,18 +150,21 @@ impl CommandExecutor for RunExecutor {
         let world = sender
             .world_or_first(server)
             .ok_or(CommandError::InvalidRequirement)?;
-        let (base_x, base_z) = if let Some(source_pos) = sender.position() {
-            (
-                source_pos.x.floor() as i32,
-                source_pos.z.floor() as i32 + TEST_POS_Z_OFFSET_FROM_PLAYER,
-            )
-        } else {
-            let level_info = world.level_info.load();
-            (
-                level_info.spawn_x,
-                level_info.spawn_z + TEST_POS_Z_OFFSET_FROM_PLAYER,
-            )
-        };
+        let (base_x, base_z) = sender.position().map_or_else(
+            || {
+                let level_info = world.level_info.load();
+                (
+                    level_info.spawn_x,
+                    level_info.spawn_z + TEST_POS_Z_OFFSET_FROM_PLAYER,
+                )
+            },
+            |source_pos| {
+                (
+                    source_pos.x.floor() as i32,
+                    source_pos.z.floor() as i32 + TEST_POS_Z_OFFSET_FROM_PLAYER,
+                )
+            },
+        );
 
         sender.send_message(TextComponent::translate_cross(
             "commands.test.run.running",
@@ -221,17 +221,11 @@ impl CommandExecutor for StopExecutor {
 }
 
 pub fn init_command_tree() -> CommandTree {
-    let tests_per_row = argument(
-        ARG_TESTS_PER_ROW,
-        BoundedNumArgumentConsumer::<i32>::new(),
-    )
-    .execute(RunExecutor);
-    let rotation_steps = argument(
-        ARG_ROTATION_STEPS,
-        BoundedNumArgumentConsumer::<i32>::new(),
-    )
-    .execute(RunExecutor)
-    .then(tests_per_row);
+    let tests_per_row =
+        argument(ARG_TESTS_PER_ROW, BoundedNumArgumentConsumer::<i32>::new()).execute(RunExecutor);
+    let rotation_steps = argument(ARG_ROTATION_STEPS, BoundedNumArgumentConsumer::<i32>::new())
+        .execute(RunExecutor)
+        .then(tests_per_row);
     let until_failed = argument(ARG_UNTIL_FAILED, BoolArgConsumer)
         .execute(RunExecutor)
         .then(rotation_steps);
@@ -307,7 +301,7 @@ fn resource_selector_matches(selector: &str, name: &str) -> bool {
     wildcard_match(selector.as_bytes(), name.as_bytes())
 }
 
-fn wildcard_match(pattern: &[u8], value: &[u8]) -> bool {
+const fn wildcard_match(pattern: &[u8], value: &[u8]) -> bool {
     let (mut p, mut v) = (0usize, 0usize);
     let mut star = None;
     let mut retry_v = 0usize;

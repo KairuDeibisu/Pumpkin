@@ -95,69 +95,14 @@ impl DatapackManager {
 
                 let (description, pack_format) = read_pack_mcmeta(&pack_path);
 
-                let data_dir = pack_path.join("data");
-                let mut pack_recipe_count = 0;
-                let mut pack_function_count = 0;
-                let mut pack_test_instance_count = 0;
-
-                if data_dir.is_dir()
-                    && let Ok(ns_entries) = fs::read_dir(&data_dir)
-                {
-                    for ns_entry in ns_entries.flatten() {
-                        let ns_path = ns_entry.path();
-                        if !ns_path.is_dir() {
-                            continue;
-                        }
-                        let namespace = ns_entry.file_name().to_string_lossy().to_string();
-
-                        // Load recipes
-                        for recipe_sub in ["recipe", "recipes"] {
-                            let recipe_dir = ns_path.join(recipe_sub);
-                            if recipe_dir.is_dir() {
-                                load_recipes_from_dir(
-                                    &namespace,
-                                    &recipe_dir,
-                                    &mut all_recipes,
-                                    &mut pack_recipe_count,
-                                );
-                            }
-                        }
-
-                        // Load functions
-                        for fn_sub in ["function", "functions"] {
-                            let fn_dir = ns_path.join(fn_sub);
-                            if fn_dir.is_dir() {
-                                let before = all_functions.len();
-                                function_loader::load_functions_from_dir(
-                                    &namespace,
-                                    &fn_dir,
-                                    &mut all_functions,
-                                );
-                                pack_function_count += all_functions.len() - before;
-                            }
-                        }
-
-                        // Load tags
-                        let tags_dir = ns_path.join("tags");
-                        if tags_dir.is_dir() {
-                            function_loader::load_function_tags_from_dir(
-                                &namespace,
-                                &tags_dir,
-                                &mut all_function_tags,
-                            );
-                        }
-
-                        // Load game test instances
-                        let test_instance_dir = ns_path.join("test_instance");
-                        if test_instance_dir.is_dir() {
-                            pack_test_instance_count += load_test_instances_from_dir(
-                                &namespace,
-                                &test_instance_dir,
-                                &mut all_test_instances,
-                            );
-                        }
-                    }
-                }
+                let (pack_recipe_count, pack_function_count, pack_test_instance_count) =
+                    load_pack_contents(
+                        &pack_path,
+                        &mut all_recipes,
+                        &mut all_functions,
+                        &mut all_function_tags,
+                        &mut all_test_instances,
+                    );
 
                 info!(
                     "Loaded datapack '{file_name}': {pack_recipe_count} recipe(s), {pack_function_count} function(s), {pack_test_instance_count} test instance(s)"
@@ -208,7 +153,7 @@ impl DatapackManager {
             .clone()
     }
 
-    pub async fn get_test_instance(&self, name: &str) -> Option<TestInstance> {
+    pub fn get_test_instance(&self, name: &str) -> Option<TestInstance> {
         self.test_instances
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -216,7 +161,7 @@ impl DatapackManager {
             .cloned()
     }
 
-    pub async fn get_test_instance_names(&self) -> Vec<String> {
+    pub fn get_test_instance_names(&self) -> Vec<String> {
         let test_instances = self
             .test_instances
             .read()
@@ -229,7 +174,7 @@ impl DatapackManager {
     /// Returns datapack test instances in the protocol's synced-registry entry format.
     /// The vanilla Test Instance Block renderer resolves required/padding/base rotation
     /// through this registry using the controller's `data.test` resource key.
-    pub async fn get_test_instance_registry_entries(&self) -> Vec<RegistryEntryData> {
+    pub fn get_test_instance_registry_entries(&self) -> Vec<RegistryEntryData> {
         let test_instances = self
             .test_instances
             .read()
@@ -365,17 +310,19 @@ fn parse_structure_resource_location(resource_location: &str) -> Result<(&str, &
 
     if namespace.is_empty()
         || !namespace.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'_' | b'-' | b'.')
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-' | b'.')
         })
     {
-        return Err(format!("Invalid structure namespace in '{resource_location}'"));
+        return Err(format!(
+            "Invalid structure namespace in '{resource_location}'"
+        ));
     }
 
     let path = raw_path.strip_suffix(".nbt").unwrap_or(raw_path);
     if path.is_empty()
-        || path.split('/').any(|segment| segment.is_empty() || segment == "." || segment == "..")
+        || path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
         || !path.bytes().all(|byte| {
             byte.is_ascii_lowercase()
                 || byte.is_ascii_digit()
@@ -386,6 +333,82 @@ fn parse_structure_resource_location(resource_location: &str) -> Result<(&str, &
     }
 
     Ok((namespace, path))
+}
+
+/// Loads recipes, functions, function tags, and test instances from a single
+/// datapack directory, returning per-pack counts as `(recipes, functions, test_instances)`.
+fn load_pack_contents(
+    pack_path: &Path,
+    all_recipes: &mut Vec<DynamicRecipe>,
+    all_functions: &mut HashMap<String, Vec<String>>,
+    all_function_tags: &mut HashMap<String, Vec<String>>,
+    all_test_instances: &mut TestInstanceRegistry,
+) -> (usize, usize, usize) {
+    let data_dir = pack_path.join("data");
+    let mut pack_recipe_count = 0;
+    let mut pack_function_count = 0;
+    let mut pack_test_instance_count = 0;
+
+    if data_dir.is_dir()
+        && let Ok(ns_entries) = fs::read_dir(&data_dir)
+    {
+        for ns_entry in ns_entries.flatten() {
+            let ns_path = ns_entry.path();
+            if !ns_path.is_dir() {
+                continue;
+            }
+            let namespace = ns_entry.file_name().to_string_lossy().to_string();
+
+            // Load recipes
+            for recipe_sub in ["recipe", "recipes"] {
+                let recipe_dir = ns_path.join(recipe_sub);
+                if recipe_dir.is_dir() {
+                    load_recipes_from_dir(
+                        &namespace,
+                        &recipe_dir,
+                        all_recipes,
+                        &mut pack_recipe_count,
+                    );
+                }
+            }
+
+            // Load functions
+            for fn_sub in ["function", "functions"] {
+                let fn_dir = ns_path.join(fn_sub);
+                if fn_dir.is_dir() {
+                    let before = all_functions.len();
+                    function_loader::load_functions_from_dir(&namespace, &fn_dir, all_functions);
+                    pack_function_count += all_functions.len() - before;
+                }
+            }
+
+            // Load tags
+            let tags_dir = ns_path.join("tags");
+            if tags_dir.is_dir() {
+                function_loader::load_function_tags_from_dir(
+                    &namespace,
+                    &tags_dir,
+                    all_function_tags,
+                );
+            }
+
+            // Load game test instances
+            let test_instance_dir = ns_path.join("test_instance");
+            if test_instance_dir.is_dir() {
+                pack_test_instance_count += load_test_instances_from_dir(
+                    &namespace,
+                    &test_instance_dir,
+                    all_test_instances,
+                );
+            }
+        }
+    }
+
+    (
+        pack_recipe_count,
+        pack_function_count,
+        pack_test_instance_count,
+    )
 }
 
 fn read_pack_mcmeta(pack_path: &Path) -> (String, u32) {

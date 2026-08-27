@@ -74,7 +74,7 @@ pub struct GameTestBatchReport {
 
 impl GameTestBatchReport {
     #[must_use]
-    pub fn new(sender: CommandSender, test_count: usize) -> Self {
+    pub const fn new(sender: CommandSender, test_count: usize) -> Self {
         Self {
             sender,
             remaining_tests: AtomicUsize::new(test_count),
@@ -150,7 +150,7 @@ impl GameTestBatchReport {
     }
 }
 
-/// A request to start a GameTest.
+/// A request to start a `GameTest`.
 pub struct GameTestRequest {
     test_id: String,
     world: Arc<World>,
@@ -229,7 +229,7 @@ impl ServerGameTestRunner {
 
             managed.run.tick().await;
             if managed.run.state.is_finished() {
-                managed.handle_completion().await;
+                managed.handle_completion();
             }
         }
 
@@ -255,7 +255,7 @@ struct ManagedGameTest {
 
 impl ManagedGameTest {
     #[expect(clippy::too_many_lines)]
-    async fn handle_completion(&mut self) {
+    fn handle_completion(&mut self) {
         let (passed, tick, error) = match &self.run.state {
             TestState::Passed { tick } => (true, *tick, None),
             TestState::Failed { tick, error } => (false, *tick, Some(error)),
@@ -276,7 +276,7 @@ impl ManagedGameTest {
             if self.retry_options.has_retries() {
                 broadcast_world(
                     &self.world,
-                    TextComponent::text(self.retry_status(true, elapsed_ms))
+                    &TextComponent::text(self.retry_status(true, elapsed_ms))
                         .color_named(NamedColor::Green),
                 );
                 self.retry_options
@@ -284,7 +284,7 @@ impl ManagedGameTest {
             } else if !is_flaky {
                 broadcast_world(
                     &self.world,
-                    TextComponent::text(format!(
+                    &TextComponent::text(format!(
                         "{} passed! ({}ms / {}gameticks)",
                         self.run.test.id(),
                         elapsed_ms,
@@ -296,7 +296,7 @@ impl ManagedGameTest {
             } else if self.successes >= self.run.test.required_successes() {
                 broadcast_world(
                     &self.world,
-                    TextComponent::text(format!(
+                    &TextComponent::text(format!(
                         "{} passed {} times of {} attempts.",
                         self.run.test.id(),
                         self.successes,
@@ -308,7 +308,7 @@ impl ManagedGameTest {
             } else {
                 broadcast_world(
                     &self.world,
-                    TextComponent::text(format!(
+                    &TextComponent::text(format!(
                         "Flaky test {} succeeded, attempt: {} successes: {}",
                         self.run.test.id(),
                         self.attempts,
@@ -324,7 +324,7 @@ impl ManagedGameTest {
             if self.retry_options.has_retries() {
                 broadcast_world(
                     &self.world,
-                    TextComponent::text(self.retry_status(false, elapsed_ms))
+                    &TextComponent::text(self.retry_status(false, elapsed_ms))
                         .color_named(NamedColor::Red),
                 );
                 self.retry_options
@@ -335,21 +335,23 @@ impl ManagedGameTest {
         } else {
             let max_attempts = self.run.test.max_attempts();
             let required_successes = self.run.test.required_successes();
-            let mut text = format!(
-                "Flaky test {} failed, attempt: {}/{}",
+            let successes_detail = if required_successes > 1 {
+                format!(
+                    ", successes: {} ({} required)",
+                    self.successes, required_successes
+                )
+            } else {
+                String::new()
+            };
+            let text = format!(
+                "Flaky test {} failed, attempt: {}/{}{successes_detail}",
                 self.run.test.id(),
                 self.attempts,
                 max_attempts
             );
-            if required_successes > 1 {
-                text.push_str(&format!(
-                    ", successes: {} ({} required)",
-                    self.successes, required_successes
-                ));
-            }
             broadcast_world(
                 &self.world,
-                TextComponent::text(text).color_named(NamedColor::Yellow),
+                &TextComponent::text(text).color_named(NamedColor::Yellow),
             );
 
             if max_attempts
@@ -359,9 +361,8 @@ impl ManagedGameTest {
             {
                 true
             } else {
-                let last_error = error
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "unknown error".to_string());
+                let last_error =
+                    error.map_or_else(|| "unknown error".to_string(), ToString::to_string);
                 let exhausted = GameTestError::ExhaustedAttempts {
                     attempts: self.attempts,
                     successes: self.successes,
@@ -379,11 +380,8 @@ impl ManagedGameTest {
             return;
         }
 
-        self.report.finish_test(
-            self.run.test.is_required(),
-            self.attempts,
-            self.successes,
-        );
+        self.report
+            .finish_test(self.run.test.is_required(), self.attempts, self.successes);
         self.done = true;
     }
 
@@ -414,22 +412,23 @@ impl ManagedGameTest {
         } else {
             NamedColor::Yellow
         };
-        broadcast_world(&self.world, TextComponent::text(text).color_named(color));
+        broadcast_world(&self.world, &TextComponent::text(text).color_named(color));
     }
 
     fn retry_status(&self, passed: bool, elapsed_ms: u128) -> String {
         let failures = self.attempts.saturating_sub(self.successes);
-        let mut report = format!(
-            "[Run: {:4}, Ok: {:4}, Fail: {:4}",
-            self.attempts, self.successes, failures
-        );
-        if !self.retry_options.unlimited_tries() {
+        let tries_left = if self.retry_options.unlimited_tries() {
+            String::new()
+        } else {
             let left = u32::try_from(self.retry_options.number_of_tries)
                 .unwrap_or_default()
                 .saturating_sub(self.attempts);
-            report.push_str(&format!(", Left: {left:4}"));
-        }
-        report.push(']');
+            format!(", Left: {left:4}")
+        };
+        let report = format!(
+            "[Run: {:4}, Ok: {:4}, Fail: {:4}{tries_left}]",
+            self.attempts, self.successes, failures
+        );
         let name = format!(
             "{} {}! {}ms",
             self.run.test.id(),
@@ -440,10 +439,7 @@ impl ManagedGameTest {
     }
 }
 
-pub(super) async fn drain_game_test_queue(
-    server: &Arc<Server>,
-    runner: &mut ServerGameTestRunner,
-) {
+pub(super) async fn drain_game_test_queue(server: &Arc<Server>, runner: &mut ServerGameTestRunner) {
     // Hold the same queue mutex used by stop_game_tests while consuming the stop
     // flag and draining requests. This closes the async race where a new /test run
     // could otherwise be drained before the old runner was cleared.
@@ -481,8 +477,9 @@ async fn prepare_test_run(
     let test_instance = server
         .datapack_manager
         .get_test_instance(&request.test_id)
-        .await
-        .ok_or_else(|| GameTestError::World(format!("Unknown test instance '{}'", request.test_id)))?;
+        .ok_or_else(|| {
+            GameTestError::World(format!("Unknown test instance '{}'", request.test_id))
+        })?;
 
     let structure = server
         .datapack_manager
@@ -516,10 +513,10 @@ async fn prepare_test_run(
     })
 }
 
-fn broadcast_world(world: &World, message: TextComponent) {
+fn broadcast_world(world: &World, message: &TextComponent) {
     let players = world.players.load_full();
     for player in players.iter() {
-        player.send_system_message(&message);
+        player.send_system_message(message);
     }
 }
 
@@ -641,7 +638,7 @@ impl GameTestWorld for ServerGameTestWorld {
         drop(entities);
 
         for entity in to_remove {
-            self.world.remove_entity(entity.as_ref()).await;
+            self.world.remove_entity(entity.as_ref());
         }
         Ok(())
     }
@@ -666,7 +663,10 @@ impl GameTestWorld for ServerGameTestWorld {
                 if let Some(chunk) = self.world.level.loaded_chunks.get(&chunk_pos) {
                     chunk.block_ticks.clear_area(min, max);
                     if !chunk.block_ticks.has_ticks() && !chunk.fluid_ticks.has_ticks() {
-                        self.world.level.chunks_with_scheduled_ticks.remove(&chunk_pos);
+                        self.world
+                            .level
+                            .chunks_with_scheduled_ticks
+                            .remove(&chunk_pos);
                     }
                 }
             }
@@ -681,16 +681,16 @@ impl GameTestWorld for ServerGameTestWorld {
 
     async fn set_test_instance_running(&self, position: &BlockPos) -> GameTestResult<()> {
         let entity = self.test_instance_block_entity(position)?;
-        entity.clear_error_markers().await;
-        entity.set_running().await;
+        entity.clear_error_markers();
+        entity.set_running();
         self.sync_block_entity(entity);
         Ok(())
     }
 
     async fn set_test_instance_success(&self, position: &BlockPos) -> GameTestResult<()> {
         let entity = self.test_instance_block_entity(position)?;
-        entity.clear_error_markers().await;
-        entity.set_success().await;
+        entity.clear_error_markers();
+        entity.set_success();
         self.sync_block_entity(entity);
         Ok(())
     }
@@ -702,24 +702,22 @@ impl GameTestWorld for ServerGameTestWorld {
         marker: Option<(BlockPos, String)>,
     ) -> GameTestResult<()> {
         let entity = self.test_instance_block_entity(position)?;
-        entity.clear_error_markers().await;
+        entity.clear_error_markers();
         if let Some((marker_position, marker_text)) = marker {
-            entity.mark_error(marker_position, marker_text).await;
+            entity.mark_error(marker_position, marker_text);
         }
-        entity.set_error_message(message.to_string()).await;
+        entity.set_error_message(message.to_string());
         self.sync_block_entity(entity);
         Ok(())
     }
 
     async fn trigger_test_block(&self, position: &BlockPos) -> GameTestResult<()> {
-        self.test_block_entity(position)?
-            .trigger(&self.world)
-            .await;
+        self.test_block_entity(position)?.trigger(&self.world);
         Ok(())
     }
 
     async fn reset_test_block(&self, position: &BlockPos) -> GameTestResult<()> {
-        self.test_block_entity(position)?.reset(&self.world).await;
+        self.test_block_entity(position)?.reset(&self.world);
         Ok(())
     }
 
@@ -728,7 +726,7 @@ impl GameTestWorld for ServerGameTestWorld {
     }
 
     async fn test_block_message(&self, position: &BlockPos) -> GameTestResult<String> {
-        Ok(self.test_block_entity(position)?.message().await)
+        Ok(self.test_block_entity(position)?.message())
     }
 
     async fn surface_height(&self, x: i32, z: i32) -> i32 {

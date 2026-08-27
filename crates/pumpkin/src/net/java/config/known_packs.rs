@@ -14,10 +14,8 @@ impl JavaClient {
             self.send_packet(&CFeatureFlags::new(&["minecraft:vanilla".to_string()]))
                 .await;
             let registry = Registry::get_synced(version);
-            let test_instance_entries = server
-                .datapack_manager
-                .get_test_instance_registry_entries()
-                .await;
+            let test_instance_entries =
+                server.datapack_manager.get_test_instance_registry_entries();
             let mut sent_dimension_type = false;
             let mut sent_test_instance = false;
             for reg in &registry {
