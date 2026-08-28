@@ -33,6 +33,7 @@ pub struct TestRun {
     test_x: i32,
     test_y: Option<i32>,
     test_z: i32,
+    chunks_loaded: bool,
     started_at: Option<Instant>,
 }
 
@@ -69,6 +70,7 @@ impl TestRun {
             test_x,
             test_y: None,
             test_z,
+            chunks_loaded: false,
             started_at: None,
         }
     }
@@ -91,6 +93,7 @@ impl TestRun {
             test_x: self.test_x,
             test_y: self.test_y,
             test_z: self.test_z,
+            chunks_loaded: false,
             started_at: None,
         }
     }
@@ -156,6 +159,37 @@ impl TestRun {
     }
 
     async fn tick_setup(&mut self, elapsed_ticks: u32) {
+        // GameTestInfo::tick does not advance tickCount until every chunk intersecting
+        // the placed structure is actually loaded and ticking. This check is one-shot
+        // per attempt, exactly like vanilla's chunksLoaded flag.
+        if !self.chunks_loaded {
+            let Some(placement) = &self.placement else {
+                self.finish_failure(
+                    0,
+                    GameTestError::World("GameTest is ticking without a placed structure".to_string()),
+                    None,
+                )
+                .await;
+                return;
+            };
+            let origin = placement.origin();
+            let size = placement.size();
+            let max = BlockPos::new(
+                origin.0.x + size[0],
+                origin.0.y + size[1],
+                origin.0.z + size[2],
+            );
+            if !self
+                .world
+                .test_area_loaded_and_ticking(origin, &max)
+                .await
+            {
+                self.state = TestState::SettingUp { elapsed_ticks };
+                return;
+            }
+            self.chunks_loaded = true;
+        }
+
         let elapsed_ticks = elapsed_ticks.saturating_add(1);
         if elapsed_ticks <= self.test.setup_ticks() {
             self.state = TestState::SettingUp { elapsed_ticks };
