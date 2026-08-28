@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
 
 use pumpkin_util::text::{TextComponent, color::NamedColor};
 
@@ -149,7 +148,6 @@ pub struct ManagedGameTest {
     sink: Arc<dyn GameTestReportSink>,
     attempts: u32,
     successes: u32,
-    started_at: Instant,
     rerun_scheduled: bool,
     done: bool,
 }
@@ -169,7 +167,6 @@ impl ManagedGameTest {
             sink,
             attempts: 0,
             successes: 0,
-            started_at: Instant::now(),
             rerun_scheduled: false,
             done: false,
         }
@@ -187,7 +184,7 @@ impl ManagedGameTest {
         if passed {
             self.successes = self.successes.saturating_add(1);
         }
-        let elapsed_ms = self.started_at.elapsed().as_millis();
+        let elapsed_ms = self.run.run_time_ms();
         let is_flaky = self.run.test.max_attempts() > 1;
 
         // This intentionally follows ReportGameListener's ordering. Command retry
@@ -308,7 +305,6 @@ impl ManagedGameTest {
         }
 
         self.run = self.run.copy_reset();
-        self.started_at = Instant::now();
         self.rerun_scheduled = false;
     }
 
