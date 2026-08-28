@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use futures::executor::block_on;
+use pumpkin_gametest::{GameTestBatchReport, GameTestReportSink};
 use pumpkin_protocol::java::client::play::{ArgumentType, CommandSuggestion, SuggestionProviders};
 use pumpkin_util::PermissionLvl;
 use pumpkin_util::identifier::Identifier;
@@ -20,7 +21,7 @@ use crate::command::tree::{CommandTree, RawArgs};
 use crate::command::{CommandError, CommandExecutor, CommandResult, CommandSender};
 use crate::server::Server;
 use crate::server::ticker::{
-    GameTestBatchReport, GameTestRequest, GameTestRetryOptions, enqueue_game_test, stop_game_tests,
+    GameTestRequest, GameTestRetryOptions, enqueue_game_test, stop_game_tests,
 };
 
 const NAMES: [&str; 1] = ["test"];
@@ -35,6 +36,16 @@ const TEST_POS_Z_OFFSET_FROM_PLAYER: i32 = 3;
 const TEST_GRID_SPACING: i32 = 64;
 const DEFAULT_TESTS_PER_ROW: i32 = 8;
 const TEST_INSTANCE_REGISTRY: Identifier = Identifier::parse_static("minecraft:test_instance");
+
+struct CommandSenderGameTestReportSink {
+    sender: CommandSender,
+}
+
+impl GameTestReportSink for CommandSenderGameTestReportSink {
+    fn send_message(&self, message: TextComponent) {
+        self.sender.send_message(message);
+    }
+}
 
 struct TestInstanceArgumentConsumer;
 
@@ -172,7 +183,12 @@ impl CommandExecutor for RunExecutor {
             [TextComponent::text(selected.len().to_string())],
         ));
 
-        let report = Arc::new(GameTestBatchReport::new(sender.clone(), selected.len()));
+        let report = Arc::new(GameTestBatchReport::new(
+            Arc::new(CommandSenderGameTestReportSink {
+                sender: sender.clone(),
+            }),
+            selected.len(),
+        ));
         let retry_options = GameTestRetryOptions::new(number_of_times, until_failed);
         for (index, test_id) in selected.into_iter().enumerate() {
             let index = index as i32;
