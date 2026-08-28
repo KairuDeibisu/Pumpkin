@@ -163,6 +163,7 @@ impl TestRun {
         }
 
         match self.begin_running(0).await {
+            Ok(()) if self.test.max_ticks() > 0 => self.evaluate_test_tick(0).await,
             Ok(()) => self.state = TestState::Running { elapsed_ticks: 0 },
             Err(error) => self.finish_failure(0, error, None).await,
         }
@@ -170,6 +171,31 @@ impl TestRun {
 
     async fn tick_running(&mut self, elapsed_ticks: u32) {
         let tick = elapsed_ticks.saturating_add(1);
+        if tick > self.test.max_ticks() {
+            self.finish_failure(
+                tick,
+                GameTestError::Timeout {
+                    max_ticks: self.test.max_ticks(),
+                },
+                None,
+            )
+            .await;
+            return;
+        }
+
+        // BlockBasedTestInstance installs onEachTick for the half-open range
+        // [0, timeoutTicks), so timeoutTicks itself has no ACCEPT/FAIL/LOG check.
+        if tick == self.test.max_ticks() {
+            self.state = TestState::Running {
+                elapsed_ticks: tick,
+            };
+            return;
+        }
+
+        self.evaluate_test_tick(tick).await;
+    }
+
+    async fn evaluate_test_tick(&mut self, tick: u32) {
         match self.evaluate_running(tick).await {
             Ok(RunningEvaluation::Passed) => self.handle_attempt_pass(tick).await,
             Ok(RunningEvaluation::Failed(error)) | Err(error) => {
@@ -177,21 +203,9 @@ impl TestRun {
                 self.finish_failure(tick, error, marker).await;
             }
             Ok(RunningEvaluation::Continue) => {
-                // GameTestInfo times out when tickCount > timeoutTicks.
-                if tick > self.test.max_ticks() {
-                    self.finish_failure(
-                        tick,
-                        GameTestError::Timeout {
-                            max_ticks: self.test.max_ticks(),
-                        },
-                        None,
-                    )
-                    .await;
-                } else {
-                    self.state = TestState::Running {
-                        elapsed_ticks: tick,
-                    };
-                }
+                self.state = TestState::Running {
+                    elapsed_ticks: tick,
+                };
             }
         }
     }
