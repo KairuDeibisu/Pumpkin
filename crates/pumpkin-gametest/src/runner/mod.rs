@@ -147,14 +147,9 @@ impl TestRun {
 
                 self.test_y = Some(placement.test_instance_pos().0.y);
                 self.placement = Some(placement);
-                if self.test.setup_ticks() == 0 {
-                    match self.begin_running(0).await {
-                        Ok(()) => self.state = TestState::Running { elapsed_ticks: 0 },
-                        Err(error) => self.finish_failure(0, error, None).await,
-                    }
-                } else {
-                    self.state = TestState::SettingUp { elapsed_ticks: 0 };
-                }
+                // Vanilla's StructureSpawner calls startExecution(1), so even a test
+                // with zero setup ticks waits until the next server tick to start.
+                self.state = TestState::SettingUp { elapsed_ticks: 0 };
             }
             Err(error) => self.finish_failure(0, error, None).await,
         }
@@ -162,14 +157,14 @@ impl TestRun {
 
     async fn tick_setup(&mut self, elapsed_ticks: u32) {
         let elapsed_ticks = elapsed_ticks.saturating_add(1);
-        if elapsed_ticks < self.test.setup_ticks() {
+        if elapsed_ticks <= self.test.setup_ticks() {
             self.state = TestState::SettingUp { elapsed_ticks };
             return;
         }
 
-        match self.begin_running(elapsed_ticks).await {
+        match self.begin_running(0).await {
             Ok(()) => self.state = TestState::Running { elapsed_ticks: 0 },
-            Err(error) => self.finish_failure(elapsed_ticks, error, None).await,
+            Err(error) => self.finish_failure(0, error, None).await,
         }
     }
 
