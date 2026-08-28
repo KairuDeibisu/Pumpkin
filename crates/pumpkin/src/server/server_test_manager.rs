@@ -7,7 +7,7 @@ use pumpkin_gametest::{
     BlockBasedTest, GameTestError, GameTestReportSink, GameTestResult, GameTestWorld,
     ManagedGameTest, ManagedGameTestRunner, StructureTemplate, TestRotation, TestRun,
 };
-pub use pumpkin_gametest::GameTestRetryOptions;
+pub use pumpkin_gametest::{GameTestBatchReport, GameTestRetryOptions};
 use pumpkin_nbt::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::text::TextComponent;
@@ -20,7 +20,6 @@ use crate::{
         BlockEntity, block_entity_from_nbt, test_block::TestBlockBlockEntity,
         test_instance_block::TestInstanceBlockBlockEntity,
     },
-    command::CommandSender,
     server::Server,
     world::World,
 };
@@ -67,16 +66,6 @@ impl GameTestRequest {
     }
 }
 
-struct CommandSenderGameTestReportSink {
-    sender: CommandSender,
-}
-
-impl GameTestReportSink for CommandSenderGameTestReportSink {
-    fn send_message(&self, message: TextComponent) {
-        self.sender.send_message(message);
-    }
-}
-
 struct WorldGameTestReportSink {
     world: Arc<World>,
 }
@@ -84,30 +73,6 @@ struct WorldGameTestReportSink {
 impl GameTestReportSink for WorldGameTestReportSink {
     fn send_message(&self, message: TextComponent) {
         broadcast_world(&self.world, &message);
-    }
-}
-
-/// Pumpkin-specific delivery wrapper around the generic batch reporter.
-///
-/// Reporting behavior lives in `pumpkin-gametest`; this type only connects its
-/// completed messages to a command sender.
-pub struct GameTestBatchReport {
-    inner: Arc<pumpkin_gametest::GameTestBatchReport>,
-}
-
-impl GameTestBatchReport {
-    #[must_use]
-    pub fn new(sender: CommandSender, test_count: usize) -> Self {
-        Self {
-            inner: Arc::new(pumpkin_gametest::GameTestBatchReport::new(
-                Arc::new(CommandSenderGameTestReportSink { sender }),
-                test_count,
-            )),
-        }
-    }
-
-    fn fail_to_start(&self, error: &GameTestError) {
-        self.inner.fail_to_start(error);
     }
 }
 
@@ -199,7 +164,7 @@ async fn prepare_test_run(
     Ok(ManagedGameTest::new(
         run,
         request.retry_options,
-        request.report.inner.clone(),
+        request.report.clone(),
         report_sink,
     ))
 }
