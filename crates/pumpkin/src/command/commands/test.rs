@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use pumpkin_gametest::{GameTestBatchReport, GameTestReportSink};
+use pumpkin_gametest::{GameTestBatchReport, GameTestReportSink, GameTestRetryOptions};
 use pumpkin_protocol::java::client::play::{ArgumentType, CommandSuggestion, SuggestionProviders};
 use pumpkin_util::PermissionLvl;
 use pumpkin_util::identifier::Identifier;
@@ -20,9 +20,7 @@ use crate::command::tree::builder::{argument, literal};
 use crate::command::tree::{CommandTree, RawArgs};
 use crate::command::{CommandError, CommandExecutor, CommandResult, CommandSender};
 use crate::server::Server;
-use crate::server::ticker::{
-    GameTestRequest, GameTestRetryOptions, enqueue_game_test, stop_game_tests,
-};
+use crate::server::server_test_manager::{GameTestRequest, enqueue_game_test, stop_game_tests};
 
 const NAMES: [&str; 1] = ["test"];
 const DESCRIPTION: &str = "Runs a GameTest test instance.";
