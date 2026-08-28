@@ -378,10 +378,10 @@ impl ManagedGameTestRunner {
     }
 
     pub async fn tick(&mut self) {
-        // Vanilla's GameTestTicker iterates a copy-on-write collection. A retry is
-        // scheduled as a copyReset GameTestInfo and is not turned back into a queued
-        // state from inside the completion callback. Mirror that two-phase lifecycle:
-        // finish every current execution first, then install scheduled reruns.
+        // Vanilla queues copyReset reruns and does not start them until the current
+        // set of batches has completed. Treat all currently active executions as one
+        // wave: finish the wave first, then install the scheduled copies so they begin
+        // on the following server tick.
         for managed in &mut self.active {
             if managed.done || managed.rerun_scheduled {
                 continue;
@@ -393,10 +393,11 @@ impl ManagedGameTestRunner {
             }
         }
 
-        for managed in &mut self.active {
-            managed.install_scheduled_rerun();
-        }
-
         self.active.retain(|managed| !managed.done);
+        if self.active.iter().all(|managed| managed.rerun_scheduled) {
+            for managed in &mut self.active {
+                managed.install_scheduled_rerun();
+            }
+        }
     }
 }
