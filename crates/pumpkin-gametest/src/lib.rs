@@ -1,6 +1,7 @@
 pub mod block_based;
 pub mod error;
 pub mod helper;
+pub mod manager;
 pub mod model;
 pub mod runner;
 pub mod structure;
@@ -9,6 +10,10 @@ pub mod world;
 pub use block_based::BlockBasedTest;
 pub use error::{GameTestError, GameTestResult};
 pub use helper::GameTestHelper;
+pub use manager::{
+    GameTestBatchReport, GameTestReportSink, GameTestRetryOptions, ManagedGameTest,
+    ManagedGameTestRunner,
+};
 pub use model::{TestDefinition, TestRotation, TestType};
 pub use runner::{TestRun, TestRunner, TestState};
 pub use structure::{
