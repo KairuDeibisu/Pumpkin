@@ -3,6 +3,7 @@ mod state;
 pub use state::TestState;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use pumpkin_util::math::position::BlockPos;
 
@@ -32,6 +33,7 @@ pub struct TestRun {
     test_x: i32,
     test_y: Option<i32>,
     test_z: i32,
+    started_at: Option<Instant>,
 }
 
 impl TestRun {
@@ -67,6 +69,7 @@ impl TestRun {
             test_x,
             test_y: None,
             test_z,
+            started_at: None,
         }
     }
 
@@ -88,7 +91,15 @@ impl TestRun {
             test_x: self.test_x,
             test_y: self.test_y,
             test_z: self.test_z,
+            started_at: None,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn run_time_ms(&self) -> u128 {
+        self.started_at
+            .as_ref()
+            .map_or(0, |started_at| started_at.elapsed().as_millis())
     }
 
     pub async fn tick(&mut self) {
@@ -190,7 +201,11 @@ impl TestRun {
         }
     }
 
-    async fn begin_running(&self, tick: u32) -> GameTestResult<()> {
+    async fn begin_running(&mut self, tick: u32) -> GameTestResult<()> {
+        // Vanilla starts GameTestInfo's stopwatch immediately before invoking the
+        // test body, so structure placement and setup ticks are not part of run time.
+        self.started_at.get_or_insert_with(Instant::now);
+
         let start_blocks = self.test_block_positions(TestBlockMode::Start);
         if start_blocks.is_empty() {
             return Err(GameTestError::Assertion {
