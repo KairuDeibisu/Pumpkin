@@ -231,7 +231,7 @@ impl ServerGameTestWorld {
         self.world.update_block_entity(&entity);
     }
 
-    async fn ensure_chunk_loaded_and_ticking(&self, position: &BlockPos) {
+    async fn ensure_chunk_loaded(&self, position: &BlockPos) {
         let chunk = position.chunk_position();
         let chunk_key = (chunk.x, chunk.y);
         let needs_lease = self
@@ -250,6 +250,28 @@ impl ServerGameTestWorld {
         if !self.world.level.is_chunk_loaded(&chunk) {
             self.world.level.get_or_fetch_chunk(chunk, |_| ()).await;
         }
+    }
+
+    fn area_loaded_and_ticking(&self, min: &BlockPos, max: &BlockPos) -> bool {
+        if max.0.x <= min.0.x || max.0.z <= min.0.z {
+            return true;
+        }
+
+        let min_chunk_x = min.0.x >> 4;
+        let max_chunk_x = (max.0.x - 1) >> 4;
+        let min_chunk_z = min.0.z >> 4;
+        let max_chunk_z = (max.0.z - 1) >> 4;
+        let active_chunks = self.world.active_chunks.load();
+
+        for chunk_x in min_chunk_x..=max_chunk_x {
+            for chunk_z in min_chunk_z..=max_chunk_z {
+                let chunk = Vector2::new(chunk_x, chunk_z);
+                if !self.world.level.is_chunk_loaded(&chunk) || !active_chunks.contains(&chunk) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 
@@ -332,7 +354,7 @@ impl GameTestWorld for ServerGameTestWorld {
         block_state_id: BlockStateId,
         flags: BlockFlags,
     ) -> GameTestResult<()> {
-        self.ensure_chunk_loaded_and_ticking(position).await;
+        self.ensure_chunk_loaded(position).await;
         self.world.set_block_state(position, block_state_id, flags);
         Ok(())
     }
@@ -357,7 +379,7 @@ impl GameTestWorld for ServerGameTestWorld {
     ) -> GameTestResult<()> {
         // This normally follows set_block_state for the same position, but keeping
         // the guarantee here makes block-entity placement correct independently too.
-        self.ensure_chunk_loaded_and_ticking(position).await;
+        self.ensure_chunk_loaded(position).await;
 
         let mut nbt = nbt.clone();
         nbt.put_int("x", position.0.x);
@@ -446,6 +468,10 @@ impl GameTestWorld for ServerGameTestWorld {
     async fn clear_block_events(&self, min: &BlockPos, max: &BlockPos) -> GameTestResult<()> {
         self.world.clear_synced_block_events_in_box(min, max);
         Ok(())
+    }
+
+    async fn test_area_loaded_and_ticking(&self, min: &BlockPos, max: &BlockPos) -> bool {
+        self.area_loaded_and_ticking(min, max)
     }
 
     async fn set_test_instance_running(&self, position: &BlockPos) -> GameTestResult<()> {
