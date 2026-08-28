@@ -1,5 +1,6 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 
 use async_trait::async_trait;
 use pumpkin_data::{BlockState, BlockStateId};
@@ -9,7 +10,7 @@ use pumpkin_gametest::{
 };
 pub use pumpkin_gametest::{GameTestBatchReport, GameTestRetryOptions};
 use pumpkin_nbt::NbtCompound;
-use pumpkin_util::math::position::BlockPos;
+use pumpkin_util::math::{position::BlockPos, vector2::Vector2};
 use pumpkin_util::text::TextComponent;
 use pumpkin_world::{chunk::ChunkHeightmapType, world::BlockFlags};
 use tokio::sync::Mutex;
@@ -27,6 +28,20 @@ use crate::{
 static GAME_TEST_QUEUE: LazyLock<Mutex<Vec<GameTestRequest>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 static STOP_GAME_TESTS: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy)]
+struct ForcedGameTestChunk {
+    users: usize,
+    was_forced: bool,
+}
+
+/// GameTest structures must keep their chunks loaded and ticking just like vanilla's
+/// `TestInstanceBlockEntity::forceLoadChunks`. Keep a small reference count so
+/// overlapping tests share the same force-load lease and pre-existing `/forceload`
+/// chunks are never released by the GameTest runtime.
+static FORCED_GAME_TEST_CHUNKS: LazyLock<
+    StdMutex<HashMap<(uuid::Uuid, i32, i32), ForcedGameTestChunk>>,
+> = LazyLock::new(|| StdMutex::new(HashMap::new()));
 
 /// A request to start a `GameTest`.
 ///
@@ -150,6 +165,7 @@ async fn prepare_test_run(
     });
     let adapter_world: Arc<dyn GameTestWorld> = Arc::new(ServerGameTestWorld {
         world: request.world,
+        forced_chunks: StdMutex::new(HashSet::new()),
     });
     let extra_rotation = TestRotation::from_steps(request.rotation_steps);
     let run = TestRun::new_with_extra_rotation(
@@ -178,6 +194,10 @@ fn broadcast_world(world: &World, message: &TextComponent) {
 
 struct ServerGameTestWorld {
     world: Arc<World>,
+    /// Chunks for which this logical test owns one reference in
+    /// `FORCED_GAME_TEST_CHUNKS`. The same adapter is retained across copy-reset
+    /// retries, so the chunks stay active for the complete retry lifecycle.
+    forced_chunks: StdMutex<HashSet<(i32, i32)>>,
 }
 
 impl ServerGameTestWorld {
@@ -210,6 +230,94 @@ impl ServerGameTestWorld {
         let entity: Arc<dyn BlockEntity> = entity;
         self.world.update_block_entity(&entity);
     }
+
+    async fn ensure_chunk_loaded_and_ticking(&self, position: &BlockPos) {
+        let chunk = position.chunk_position();
+        let chunk_key = (chunk.x, chunk.y);
+        let needs_lease = self
+            .forced_chunks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(chunk_key);
+
+        if needs_lease {
+            acquire_forced_game_test_chunk(&self.world, chunk);
+        }
+
+        // World::set_block_state is intentionally synchronous and only mutates an
+        // already-loaded chunk. Vanilla force-loads the complete GameTest structure
+        // before placing it; make the async GameTest adapter provide that guarantee.
+        if !self.world.level.is_chunk_loaded(&chunk) {
+            self.world.level.get_or_fetch_chunk(chunk, |_| ()).await;
+        }
+    }
+}
+
+impl Drop for ServerGameTestWorld {
+    fn drop(&mut self) {
+        let chunks: Vec<_> = self
+            .forced_chunks
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain()
+            .collect();
+        for (chunk_x, chunk_z) in chunks {
+            release_forced_game_test_chunk(&self.world, Vector2::new(chunk_x, chunk_z));
+        }
+    }
+}
+
+fn acquire_forced_game_test_chunk(world: &World, chunk: Vector2<i32>) {
+    let key = (world.uuid, chunk.x, chunk.y);
+    let mut leases = FORCED_GAME_TEST_CHUNKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(lease) = leases.get_mut(&key) {
+        lease.users = lease.users.saturating_add(1);
+        return;
+    }
+
+    let was_forced = {
+        let mut forced_chunks = world
+            .forced_chunks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let was_forced = forced_chunks.contains(&chunk);
+        forced_chunks.insert(chunk);
+        was_forced
+    };
+    leases.insert(
+        key,
+        ForcedGameTestChunk {
+            users: 1,
+            was_forced,
+        },
+    );
+}
+
+fn release_forced_game_test_chunk(world: &World, chunk: Vector2<i32>) {
+    let key = (world.uuid, chunk.x, chunk.y);
+    let mut leases = FORCED_GAME_TEST_CHUNKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let release_world_chunk = match leases.get_mut(&key) {
+        Some(lease) if lease.users > 1 => {
+            lease.users -= 1;
+            return;
+        }
+        Some(lease) => !lease.was_forced,
+        None => return,
+    };
+    leases.remove(&key);
+    drop(leases);
+
+    if release_world_chunk {
+        world
+            .forced_chunks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&chunk);
+    }
 }
 
 #[async_trait]
@@ -224,6 +332,7 @@ impl GameTestWorld for ServerGameTestWorld {
         block_state_id: BlockStateId,
         flags: BlockFlags,
     ) -> GameTestResult<()> {
+        self.ensure_chunk_loaded_and_ticking(position).await;
         self.world.set_block_state(position, block_state_id, flags);
         Ok(())
     }
@@ -246,6 +355,10 @@ impl GameTestWorld for ServerGameTestWorld {
         position: &BlockPos,
         nbt: &NbtCompound,
     ) -> GameTestResult<()> {
+        // This normally follows set_block_state for the same position, but keeping
+        // the guarantee here makes block-entity placement correct independently too.
+        self.ensure_chunk_loaded_and_ticking(position).await;
+
         let mut nbt = nbt.clone();
         nbt.put_int("x", position.0.x);
         nbt.put_int("y", position.0.y);
@@ -315,7 +428,7 @@ impl GameTestWorld for ServerGameTestWorld {
 
         for chunk_x in min_chunk_x..=max_chunk_x {
             for chunk_z in min_chunk_z..=max_chunk_z {
-                let chunk_pos = pumpkin_util::math::vector2::Vector2::new(chunk_x, chunk_z);
+                let chunk_pos = Vector2::new(chunk_x, chunk_z);
                 if let Some(chunk) = self.world.level.loaded_chunks.get(&chunk_pos) {
                     chunk.block_ticks.clear_area(min, max);
                     if !chunk.block_ticks.has_ticks() && !chunk.fluid_ticks.has_ticks() {
