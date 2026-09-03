@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use pumpkin_data::translation::{bedrock, java};
 use pumpkin_util::text::{TextComponent, color::NamedColor};
 
 use crate::{GameTestError, GameTestSession, GameTestState};
@@ -99,9 +100,9 @@ impl GameTestBatchReport {
 
         self.reporter.send_message(
             pumpkin_macros::translate_cross!(
-                "commands.test.summary",
-                "commands.test.summary",
-                [TextComponent::text(total.to_string())],
+                java::COMMANDS_TEST_SUMMARY,
+                bedrock::COMMANDS_TEST_SUMMARY,
+                TextComponent::text(total.to_string()),
             )
             .color_named(NamedColor::White),
         );
@@ -109,18 +110,17 @@ impl GameTestBatchReport {
         if failed_required != 0 {
             self.reporter.send_message(
                 pumpkin_macros::translate_cross!(
-                    "commands.test.summary.failed",
-                    "commands.test.summary.failed",
-                    [TextComponent::text(failed_required.to_string())],
+                    java::COMMANDS_TEST_SUMMARY_FAILED,
+                    bedrock::COMMANDS_TEST_SUMMARY_FAILED,
+                    TextComponent::text(failed_required.to_string()),
                 )
                 .color_named(NamedColor::Red),
             );
         } else {
             self.reporter.send_message(
                 pumpkin_macros::translate_cross!(
-                    "commands.test.summary.all_required_passed",
-                    "commands.test.summary.all_required_passed",
-                    [],
+                    java::COMMANDS_TEST_SUMMARY_ALL_REQUIRED_PASSED,
+                    bedrock::COMMANDS_TEST_SUMMARY_ALL_REQUIRED_PASSED,
                 )
                 .color_named(NamedColor::Green),
             );
@@ -128,9 +128,9 @@ impl GameTestBatchReport {
 
         if failed_optional != 0 {
             self.reporter.send_message(pumpkin_macros::translate_cross!(
-                "commands.test.summary.optional_failed",
-                "commands.test.summary.optional_failed",
-                [TextComponent::text(failed_optional.to_string())],
+                java::COMMANDS_TEST_SUMMARY_OPTIONAL_FAILED,
+                bedrock::COMMANDS_TEST_SUMMARY_OPTIONAL_FAILED,
+                TextComponent::text(failed_optional.to_string()),
             ));
         }
     }
