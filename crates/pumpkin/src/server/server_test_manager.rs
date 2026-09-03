@@ -35,10 +35,10 @@ struct ForcedGameTestChunk {
     was_forced: bool,
 }
 
-/// GameTest structures must keep their chunks loaded and ticking just like vanilla's
+/// `GameTest` structures must keep their chunks loaded and ticking just like vanilla's
 /// `TestInstanceBlockEntity::forceLoadChunks`. Keep a small reference count so
 /// overlapping tests share the same force-load lease and pre-existing `/forceload`
-/// chunks are never released by the GameTest runtime.
+/// chunks are never released by the `GameTest` runtime.
 static FORCED_GAME_TEST_CHUNKS: LazyLock<
     StdMutex<HashMap<(uuid::Uuid, i32, i32), ForcedGameTestChunk>>,
 > = LazyLock::new(|| StdMutex::new(HashMap::new()));

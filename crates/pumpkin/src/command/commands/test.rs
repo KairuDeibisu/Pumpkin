@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use pumpkin_data::translation::{bedrock, java};
+use pumpkin_data::translation::java;
 use pumpkin_gametest::{GameTestBatchReport, GameTestReporter, GameTestRetryOptions};
 use pumpkin_protocol::java::client::play::{ArgumentType, CommandSuggestion, SuggestionProviders};
 use pumpkin_util::PermissionLvl;

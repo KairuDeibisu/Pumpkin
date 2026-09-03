@@ -6,9 +6,9 @@ use pumpkin_util::text::{TextComponent, color::NamedColor};
 
 use crate::{GameTestError, GameTestSession, GameTestState};
 
-/// Receives fully constructed GameTest report messages.
+/// Receives fully constructed `GameTest` report messages.
 ///
-/// The GameTest runtime owns when and what to report. Integrations only decide
+/// The `GameTest` runtime owns when and what to report. Integrations only decide
 /// where those messages are delivered.
 pub trait GameTestReporter: Send + Sync {
     fn send_message(&self, message: TextComponent);
@@ -49,7 +49,7 @@ impl GameTestRetryOptions {
     }
 }
 
-/// Shared accounting and reporting for a group of GameTests.
+/// Shared accounting and reporting for a group of `GameTests`.
 pub struct GameTestBatchReport {
     reporter: Arc<dyn GameTestReporter>,
     remaining_tests: AtomicUsize,
@@ -135,7 +135,7 @@ impl GameTestBatchReport {
     }
 }
 
-/// A ready-to-run GameTest plus the generic retry/reporting lifecycle around it.
+/// A ready-to-run `GameTest` plus the generic retry/reporting lifecycle around it.
 ///
 /// Construction of the underlying [`TestRun`] is intentionally left to the
 /// integration, so this type does not care whether a test was started by a
@@ -349,7 +349,7 @@ impl GameTestManager {
     }
 }
 
-/// Ticks ready GameTest runs and owns their retry lifecycle.
+/// Ticks ready `GameTest` runs and owns their retry lifecycle.
 #[derive(Default)]
 pub struct GameTestRunner {
     active: Vec<GameTestManager>,
