@@ -9,7 +9,8 @@ use pumpkin_util::math::position::BlockPos;
 
 use crate::block_based::BlockBasedTest;
 use crate::error::{GameTestError, GameTestResult};
-use crate::model::GameTestRotation;
+use crate::function::run_function;
+use crate::model::{GameTestRotation, TestType};
 use crate::structure::{
     GameTestPosition, GameTestStructureTemplate, TestBlockMode, TestStructureInstance,
     clear_success_entities, encase_structure, place_structure_with_controller_rotation,
@@ -203,8 +204,17 @@ impl GameTestSession {
         }
 
         match self.begin_running(0).await {
-            Ok(()) if self.test.max_ticks() > 0 => self.evaluate_test_tick(0).await,
-            Ok(()) => self.state = GameTestState::Running { elapsed_ticks: 0 },
+            Ok(RunningEvaluation::Passed) => self.handle_attempt_pass(0).await,
+            Ok(RunningEvaluation::Failed(error)) => {
+                let marker = assertion_marker(&error);
+                self.finish_failure(0, error, marker).await;
+            }
+            Ok(RunningEvaluation::Continue) if self.test.max_ticks() > 0 => {
+                self.evaluate_test_tick(0).await;
+            }
+            Ok(RunningEvaluation::Continue) => {
+                self.state = GameTestState::Running { elapsed_ticks: 0 };
+            }
             Err(error) => self.finish_failure(0, error, None).await,
         }
     }
@@ -223,8 +233,8 @@ impl GameTestSession {
             return;
         }
 
-        // BlockBasedTestInstance installs onEachTick for the half-open range
-        // [0, timeoutTicks), so timeoutTicks itself has no ACCEPT/FAIL/LOG check.
+        // Test evaluations use the half-open range [0, max_ticks), so max_ticks
+        // itself has no additional evaluation before the timeout is reported.
         if tick == self.test.max_ticks() {
             self.state = GameTestState::Running {
                 elapsed_ticks: tick,
@@ -250,41 +260,70 @@ impl GameTestSession {
         }
     }
 
-    async fn begin_running(&mut self, tick: u32) -> GameTestResult<()> {
+    async fn begin_running(&mut self, tick: u32) -> GameTestResult<RunningEvaluation> {
         // Vanilla starts GameTestInfo's stopwatch immediately before invoking the
         // test body, so structure placement and setup ticks are not part of run time.
         self.started_at.get_or_insert_with(Instant::now);
 
-        let start_blocks = self.test_block_positions(TestBlockMode::Start);
-        if start_blocks.is_empty() {
-            return Err(GameTestError::Assertion {
-                tick,
-                position: None,
-                message: "missing START test block".to_string(),
-            });
-        }
-        if start_blocks.len() != 1 {
-            return Err(GameTestError::Assertion {
-                tick,
-                position: None,
-                message: format!(
-                    "expected exactly one START test block, found {}",
-                    start_blocks.len()
-                ),
-            });
-        }
+        match self.test.definition().instance_type {
+            TestType::BlockBased => {
+                let start_blocks = self.test_block_positions(TestBlockMode::Start);
+                if start_blocks.is_empty() {
+                    return Err(GameTestError::Assertion {
+                        tick,
+                        position: None,
+                        message: "missing START test block".to_string(),
+                    });
+                }
+                if start_blocks.len() != 1 {
+                    return Err(GameTestError::Assertion {
+                        tick,
+                        position: None,
+                        message: format!(
+                            "expected exactly one START test block, found {}",
+                            start_blocks.len()
+                        ),
+                    });
+                }
 
-        if let Some(placement) = &self.placement {
-            // GameTestInfo.startTest marks the controller RUNNING immediately before
-            // invoking BlockBasedTestInstance.run, which triggers START.
-            self.world
-                .set_test_instance_running(placement.test_instance_pos())
-                .await?;
+                if let Some(placement) = &self.placement {
+                    // GameTestInfo.startTest marks the controller RUNNING immediately before
+                    // invoking BlockBasedTestInstance.run, which triggers START.
+                    self.world
+                        .set_test_instance_running(placement.test_instance_pos())
+                        .await?;
+                }
+                self.world.trigger_test_block(&start_blocks[0]).await?;
+                Ok(RunningEvaluation::Continue)
+            }
+            TestType::Function => {
+                let function = self.test.definition().function.clone().ok_or_else(|| {
+                    GameTestError::World(format!(
+                        "Function GameTest '{}' is missing its function id",
+                        self.test.id()
+                    ))
+                })?;
+
+                if let Some(placement) = &self.placement {
+                    self.world
+                        .set_test_instance_running(placement.test_instance_pos())
+                        .await?;
+                }
+
+                if run_function(&function).await? {
+                    Ok(RunningEvaluation::Passed)
+                } else {
+                    Ok(RunningEvaluation::Continue)
+                }
+            }
         }
-        self.world.trigger_test_block(&start_blocks[0]).await
     }
 
     async fn evaluate_running(&self, tick: u32) -> GameTestResult<RunningEvaluation> {
+        if self.test.definition().instance_type == TestType::Function {
+            return Ok(RunningEvaluation::Continue);
+        }
+
         let accept_blocks = self.test_block_positions(TestBlockMode::Accept);
         if accept_blocks.is_empty() {
             return Ok(RunningEvaluation::Failed(GameTestError::Assertion {
