@@ -1,6 +1,6 @@
 mod state;
 
-pub use state::TestState;
+pub use state::GameTestState;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -9,9 +9,9 @@ use pumpkin_util::math::position::BlockPos;
 
 use crate::block_based::BlockBasedTest;
 use crate::error::{GameTestError, GameTestResult};
-use crate::model::TestRotation;
+use crate::model::GameTestRotation;
 use crate::structure::{
-    PlacedStructure, StructureTemplate, TestBlockMode, TestPosition, clear_success_entities,
+    TestStructureInstance, GameTestStructureTemplate, TestBlockMode, GameTestPosition, clear_success_entities,
     encase_structure, place_structure_with_controller_rotation, remove_barriers,
 };
 use crate::world::GameTestWorld;
@@ -22,14 +22,14 @@ enum RunningEvaluation {
     Failed(GameTestError),
 }
 
-pub struct TestRun {
+pub struct GameTestSession {
     pub test: BlockBasedTest,
-    pub state: TestState,
-    pub placement: Option<PlacedStructure>,
+    pub state: GameTestState,
+    pub placement: Option<TestStructureInstance>,
     world: Arc<dyn GameTestWorld>,
-    template: Arc<StructureTemplate>,
-    extra_rotation: TestRotation,
-    effective_rotation: TestRotation,
+    template: Arc<GameTestStructureTemplate>,
+    extra_rotation: GameTestRotation,
+    effective_rotation: GameTestRotation,
     test_x: i32,
     test_y: Option<i32>,
     test_z: i32,
@@ -37,31 +37,31 @@ pub struct TestRun {
     started_at: Option<Instant>,
 }
 
-impl TestRun {
+impl GameTestSession {
     #[must_use]
     pub fn new(
         test: BlockBasedTest,
         world: Arc<dyn GameTestWorld>,
-        template: Arc<StructureTemplate>,
+        template: Arc<GameTestStructureTemplate>,
         test_x: i32,
         test_z: i32,
     ) -> Self {
-        Self::new_with_extra_rotation(test, world, template, test_x, test_z, TestRotation::None)
+        Self::new_with_extra_rotation(test, world, template, test_x, test_z, GameTestRotation::None)
     }
 
     #[must_use]
     pub fn new_with_extra_rotation(
         test: BlockBasedTest,
         world: Arc<dyn GameTestWorld>,
-        template: Arc<StructureTemplate>,
+        template: Arc<GameTestStructureTemplate>,
         test_x: i32,
         test_z: i32,
-        extra_rotation: TestRotation,
+        extra_rotation: GameTestRotation,
     ) -> Self {
         let effective_rotation = test.rotation().then(extra_rotation);
         Self {
             test,
-            state: TestState::Queued,
+            state: GameTestState::Queued,
             placement: None,
             world,
             template,
@@ -84,7 +84,7 @@ impl TestRun {
     pub fn copy_reset(&self) -> Self {
         Self {
             test: self.test.clone(),
-            state: TestState::Queued,
+            state: GameTestState::Queued,
             placement: None,
             world: self.world.clone(),
             template: self.template.clone(),
@@ -112,12 +112,12 @@ impl TestRun {
 
         // Move the current state out so state transitions can freely borrow `self`
         // across async calls without holding a borrow into `self.state`.
-        let state = std::mem::replace(&mut self.state, TestState::Queued);
+        let state = std::mem::replace(&mut self.state, GameTestState::Queued);
         match state {
-            TestState::Queued => self.tick_queued().await,
-            TestState::SettingUp { elapsed_ticks } => self.tick_setup(elapsed_ticks).await,
-            TestState::Running { elapsed_ticks } => self.tick_running(elapsed_ticks).await,
-            finished @ (TestState::Passed { .. } | TestState::Failed { .. }) => {
+            GameTestState::Queued => self.tick_queued().await,
+            GameTestState::SettingUp { elapsed_ticks } => self.tick_setup(elapsed_ticks).await,
+            GameTestState::Running { elapsed_ticks } => self.tick_running(elapsed_ticks).await,
+            finished @ (GameTestState::Passed { .. } | GameTestState::Failed { .. }) => {
                 self.state = finished;
             }
         }
@@ -130,7 +130,7 @@ impl TestRun {
             self.test.id(),
             self.effective_rotation,
             self.extra_rotation,
-            TestPosition::new(self.test_x, self.test_y, self.test_z),
+            GameTestPosition::new(self.test_x, self.test_y, self.test_z),
             self.test.definition().padding,
         )
         .await;
@@ -152,7 +152,7 @@ impl TestRun {
                 self.placement = Some(placement);
                 // Vanilla's StructureSpawner calls startExecution(1), so even a test
                 // with zero setup ticks waits until the next server tick to start.
-                self.state = TestState::SettingUp { elapsed_ticks: 0 };
+                self.state = GameTestState::SettingUp { elapsed_ticks: 0 };
             }
             Err(error) => self.finish_failure(0, error, None).await,
         }
@@ -184,7 +184,7 @@ impl TestRun {
                 .test_area_loaded_and_ticking(origin, &max)
                 .await
             {
-                self.state = TestState::SettingUp { elapsed_ticks };
+                self.state = GameTestState::SettingUp { elapsed_ticks };
                 return;
             }
             self.chunks_loaded = true;
@@ -192,13 +192,13 @@ impl TestRun {
 
         let elapsed_ticks = elapsed_ticks.saturating_add(1);
         if elapsed_ticks <= self.test.setup_ticks() {
-            self.state = TestState::SettingUp { elapsed_ticks };
+            self.state = GameTestState::SettingUp { elapsed_ticks };
             return;
         }
 
         match self.begin_running(0).await {
             Ok(()) if self.test.max_ticks() > 0 => self.evaluate_test_tick(0).await,
-            Ok(()) => self.state = TestState::Running { elapsed_ticks: 0 },
+            Ok(()) => self.state = GameTestState::Running { elapsed_ticks: 0 },
             Err(error) => self.finish_failure(0, error, None).await,
         }
     }
@@ -220,7 +220,7 @@ impl TestRun {
         // BlockBasedTestInstance installs onEachTick for the half-open range
         // [0, timeoutTicks), so timeoutTicks itself has no ACCEPT/FAIL/LOG check.
         if tick == self.test.max_ticks() {
-            self.state = TestState::Running {
+            self.state = GameTestState::Running {
                 elapsed_ticks: tick,
             };
             return;
@@ -237,7 +237,7 @@ impl TestRun {
                 self.finish_failure(tick, error, marker).await;
             }
             Ok(RunningEvaluation::Continue) => {
-                self.state = TestState::Running {
+                self.state = GameTestState::Running {
                     elapsed_ticks: tick,
                 };
             }
@@ -321,7 +321,7 @@ impl TestRun {
             // GameTestInfo::succeed removes non-player entities before the listeners
             // report success or schedule a copyReset rerun.
             if let Err(error) = clear_success_entities(self.world.as_ref(), placement).await {
-                self.state = TestState::Failed { tick, error };
+                self.state = GameTestState::Failed { tick, error };
                 return;
             }
 
@@ -330,7 +330,7 @@ impl TestRun {
                 .set_test_instance_success(placement.test_instance_pos())
                 .await
             {
-                self.state = TestState::Failed { tick, error };
+                self.state = GameTestState::Failed { tick, error };
                 return;
             }
 
@@ -343,11 +343,11 @@ impl TestRun {
             )
             .await
             {
-                self.state = TestState::Failed { tick, error };
+                self.state = GameTestState::Failed { tick, error };
                 return;
             }
         }
-        self.state = TestState::Passed { tick };
+        self.state = GameTestState::Passed { tick };
     }
 
     async fn finish_failure(
@@ -363,14 +363,14 @@ impl TestRun {
                 .set_test_instance_failure(placement.test_instance_pos(), &message, marker)
                 .await
             {
-                self.state = TestState::Failed {
+                self.state = GameTestState::Failed {
                     tick,
                     error: controller_error,
                 };
                 return;
             }
         }
-        self.state = TestState::Failed { tick, error };
+        self.state = GameTestState::Failed { tick, error };
     }
 
     fn test_block_positions(&self, mode: TestBlockMode) -> Vec<BlockPos> {
@@ -406,7 +406,7 @@ fn assertion_marker(error: &GameTestError) -> Option<(BlockPos, String)> {
 
 #[derive(Default)]
 pub struct TestRunner {
-    active: Vec<TestRun>,
+    active: Vec<GameTestSession>,
 }
 
 impl TestRunner {
@@ -415,7 +415,7 @@ impl TestRunner {
         Self { active: Vec::new() }
     }
 
-    pub fn enqueue(&mut self, run: TestRun) {
+    pub fn enqueue(&mut self, run: GameTestSession) {
         self.active.push(run);
     }
 
@@ -426,11 +426,11 @@ impl TestRunner {
     }
 
     #[must_use]
-    pub fn active(&self) -> &[TestRun] {
+    pub fn active(&self) -> &[GameTestSession] {
         &self.active
     }
 
-    pub fn active_mut(&mut self) -> &mut [TestRun] {
+    pub fn active_mut(&mut self) -> &mut [GameTestSession] {
         &mut self.active
     }
 }

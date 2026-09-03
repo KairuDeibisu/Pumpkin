@@ -5,7 +5,7 @@ use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::world::BlockFlags;
 
 use crate::error::GameTestResult;
-use crate::model::TestRotation;
+use crate::model::GameTestRotation;
 
 #[async_trait]
 pub trait GameTestWorld: Send + Sync {
@@ -21,7 +21,7 @@ pub trait GameTestWorld: Send + Sync {
     async fn rotate_block_state(
         &self,
         block_state_id: BlockStateId,
-        rotation: TestRotation,
+        rotation: GameTestRotation,
     ) -> GameTestResult<BlockStateId>;
 
     async fn set_block_entity_nbt(

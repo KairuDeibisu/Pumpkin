@@ -3,13 +3,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use pumpkin_util::text::{TextComponent, color::NamedColor};
 
-use crate::{GameTestError, TestRun, TestState};
+use crate::{GameTestError, GameTestSession, GameTestState};
 
 /// Receives fully constructed GameTest report messages.
 ///
 /// The GameTest runtime owns when and what to report. Integrations only decide
 /// where those messages are delivered.
-pub trait GameTestReportSink: Send + Sync {
+pub trait GameTestReporter: Send + Sync {
     fn send_message(&self, message: TextComponent);
 }
 
@@ -50,7 +50,7 @@ impl GameTestRetryOptions {
 
 /// Shared accounting and reporting for a group of GameTests.
 pub struct GameTestBatchReport {
-    sink: Arc<dyn GameTestReportSink>,
+    reporter: Arc<dyn GameTestReporter>,
     remaining_tests: AtomicUsize,
     total_runs: AtomicUsize,
     failed_required: AtomicUsize,
@@ -59,9 +59,9 @@ pub struct GameTestBatchReport {
 
 impl GameTestBatchReport {
     #[must_use]
-    pub fn new(sink: Arc<dyn GameTestReportSink>, test_count: usize) -> Self {
+    pub fn new(reporter: Arc<dyn GameTestReporter>, test_count: usize) -> Self {
         Self {
-            sink,
+            reporter,
             remaining_tests: AtomicUsize::new(test_count),
             total_runs: AtomicUsize::new(0),
             failed_required: AtomicUsize::new(0),
@@ -70,7 +70,7 @@ impl GameTestBatchReport {
     }
 
     pub fn fail_to_start(&self, error: &GameTestError) {
-        self.sink.send_message(
+        self.reporter.send_message(
             TextComponent::text(error.to_string()).color_named(NamedColor::Red),
         );
         self.finish_test(true, 1, 0);
@@ -97,7 +97,7 @@ impl GameTestBatchReport {
         let failed_required = self.failed_required.load(Ordering::Acquire);
         let failed_optional = self.failed_optional.load(Ordering::Acquire);
 
-        self.sink.send_message(
+        self.reporter.send_message(
             TextComponent::translate_cross(
                 "commands.test.summary",
                 "commands.test.summary",
@@ -107,7 +107,7 @@ impl GameTestBatchReport {
         );
 
         if failed_required != 0 {
-            self.sink.send_message(
+            self.reporter.send_message(
                 TextComponent::translate_cross(
                     "commands.test.summary.failed",
                     "commands.test.summary.failed",
@@ -116,7 +116,7 @@ impl GameTestBatchReport {
                 .color_named(NamedColor::Red),
             );
         } else {
-            self.sink.send_message(
+            self.reporter.send_message(
                 TextComponent::translate_cross(
                     "commands.test.summary.all_required_passed",
                     "commands.test.summary.all_required_passed",
@@ -127,7 +127,7 @@ impl GameTestBatchReport {
         }
 
         if failed_optional != 0 {
-            self.sink.send_message(TextComponent::translate_cross(
+            self.reporter.send_message(TextComponent::translate_cross(
                 "commands.test.summary.optional_failed",
                 "commands.test.summary.optional_failed",
                 [TextComponent::text(failed_optional.to_string())],
@@ -141,24 +141,24 @@ impl GameTestBatchReport {
 /// Construction of the underlying [`TestRun`] is intentionally left to the
 /// integration, so this type does not care whether a test was started by a
 /// command, CLI mode, or another harness.
-pub struct ManagedGameTest {
-    run: TestRun,
+pub struct GameTestManager {
+    run: GameTestSession,
     retry_options: GameTestRetryOptions,
     report: Arc<GameTestBatchReport>,
-    sink: Arc<dyn GameTestReportSink>,
+    sink: Arc<dyn GameTestReporter>,
     attempts: u32,
     successes: u32,
     rerun_scheduled: bool,
     done: bool,
 }
 
-impl ManagedGameTest {
+impl GameTestManager {
     #[must_use]
     pub fn new(
-        run: TestRun,
+        run: GameTestSession,
         retry_options: GameTestRetryOptions,
         report: Arc<GameTestBatchReport>,
-        sink: Arc<dyn GameTestReportSink>,
+        sink: Arc<dyn GameTestReporter>,
     ) -> Self {
         Self {
             run,
@@ -175,8 +175,8 @@ impl ManagedGameTest {
     #[expect(clippy::too_many_lines)]
     fn handle_completion(&mut self) {
         let (passed, tick, error) = match &self.run.state {
-            TestState::Passed { tick } => (true, *tick, None),
-            TestState::Failed { tick, error } => (false, *tick, Some(error)),
+            GameTestState::Passed { tick } => (true, *tick, None),
+            GameTestState::Failed { tick, error } => (false, *tick, Some(error)),
             _ => return,
         };
 
@@ -355,17 +355,17 @@ impl ManagedGameTest {
 
 /// Ticks ready GameTest runs and owns their retry lifecycle.
 #[derive(Default)]
-pub struct ManagedGameTestRunner {
-    active: Vec<ManagedGameTest>,
+pub struct GameTestRunner {
+    active: Vec<GameTestManager>,
 }
 
-impl ManagedGameTestRunner {
+impl GameTestRunner {
     #[must_use]
     pub const fn new() -> Self {
         Self { active: Vec::new() }
     }
 
-    pub fn enqueue(&mut self, run: ManagedGameTest) {
+    pub fn enqueue(&mut self, run: GameTestManager) {
         self.active.push(run);
     }
 

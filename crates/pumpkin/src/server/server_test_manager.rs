@@ -5,8 +5,8 @@ use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use async_trait::async_trait;
 use pumpkin_data::{BlockState, BlockStateId};
 use pumpkin_gametest::{
-    BlockBasedTest, GameTestError, GameTestReportSink, GameTestResult, GameTestWorld,
-    ManagedGameTest, ManagedGameTestRunner, StructureTemplate, TestRotation, TestRun,
+    BlockBasedTest, GameTestError, GameTestReporter, GameTestResult, GameTestWorld,
+    GameTestManager, GameTestRunner, GameTestStructureTemplate, GameTestRotation, GameTestSession,
 };
 pub use pumpkin_gametest::{GameTestBatchReport, GameTestRetryOptions};
 use pumpkin_nbt::NbtCompound;
@@ -25,7 +25,7 @@ use crate::{
     world::World,
 };
 
-static GAME_TEST_QUEUE: LazyLock<Mutex<Vec<GameTestRequest>>> =
+static GAME_TEST_QUEUE: LazyLock<Mutex<Vec<GameTestQueueEntry>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 static STOP_GAME_TESTS: AtomicBool = AtomicBool::new(false);
 
@@ -43,12 +43,7 @@ static FORCED_GAME_TEST_CHUNKS: LazyLock<
     StdMutex<HashMap<(uuid::Uuid, i32, i32), ForcedGameTestChunk>>,
 > = LazyLock::new(|| StdMutex::new(HashMap::new()));
 
-/// A request to start a `GameTest`.
-///
-/// This stays on the server side deliberately: resolving datapacks, selecting a
-/// world, and deciding when a test starts are integration concerns rather than
-/// responsibilities of the GameTest runtime.
-pub struct GameTestRequest {
+pub struct GameTestQueueEntry {
     test_id: String,
     world: Arc<World>,
     test_x: i32,
@@ -58,7 +53,7 @@ pub struct GameTestRequest {
     report: Arc<GameTestBatchReport>,
 }
 
-impl GameTestRequest {
+impl GameTestQueueEntry {
     #[must_use]
     pub fn new(
         test_id: impl Into<String>,
@@ -81,17 +76,17 @@ impl GameTestRequest {
     }
 }
 
-struct WorldGameTestReportSink {
+struct GameTestWorldReporter {
     world: Arc<World>,
 }
 
-impl GameTestReportSink for WorldGameTestReportSink {
+impl GameTestReporter for GameTestWorldReporter {
     fn send_message(&self, message: TextComponent) {
         broadcast_world(&self.world, &message);
     }
 }
 
-pub async fn enqueue_game_test(request: GameTestRequest) {
+pub async fn enqueue_game_test(request: GameTestQueueEntry) {
     GAME_TEST_QUEUE.lock().await.push(request);
 }
 
@@ -104,11 +99,10 @@ pub async fn stop_game_tests() {
     STOP_GAME_TESTS.store(true, Ordering::Release);
 }
 
-pub(super) type ServerGameTestRunner = ManagedGameTestRunner;
 
 pub(super) async fn drain_game_test_queue(
     server: &Arc<Server>,
-    runner: &mut ManagedGameTestRunner,
+    runner: &mut GameTestRunner,
 ) {
     // Hold the same queue mutex used by stop_game_tests while consuming the stop
     // flag and draining requests. This closes the async race where a new /test run
@@ -144,8 +138,8 @@ pub(super) async fn drain_game_test_queue(
 
 async fn prepare_test_run(
     server: &Arc<Server>,
-    request: GameTestRequest,
-) -> GameTestResult<ManagedGameTest> {
+    request: GameTestQueueEntry,
+) -> GameTestResult<GameTestManager> {
     let test_instance = server
         .datapack_manager
         .get_test_instance(&request.test_id)
@@ -158,17 +152,17 @@ async fn prepare_test_run(
         .load_structure(&test_instance.structure)
         .await
         .map_err(GameTestError::World)?;
-    let template = StructureTemplate::from_nbt(&structure)?;
+    let template = GameTestStructureTemplate::from_nbt(&structure)?;
     let test = BlockBasedTest::new(request.test_id, test_instance);
-    let report_sink: Arc<dyn GameTestReportSink> = Arc::new(WorldGameTestReportSink {
+    let report_sink: Arc<dyn GameTestReporter> = Arc::new(GameTestWorldReporter {
         world: request.world.clone(),
     });
     let adapter_world: Arc<dyn GameTestWorld> = Arc::new(ServerGameTestWorld {
         world: request.world,
         forced_chunks: StdMutex::new(HashSet::new()),
     });
-    let extra_rotation = TestRotation::from_steps(request.rotation_steps);
-    let run = TestRun::new_with_extra_rotation(
+    let extra_rotation = GameTestRotation::from_steps(request.rotation_steps);
+    let run = GameTestSession::new_with_extra_rotation(
         test,
         adapter_world,
         Arc::new(template),
@@ -177,7 +171,7 @@ async fn prepare_test_run(
         extra_rotation,
     );
 
-    Ok(ManagedGameTest::new(
+    Ok(GameTestManager::new(
         run,
         request.retry_options,
         request.report.clone(),
@@ -362,7 +356,7 @@ impl GameTestWorld for ServerGameTestWorld {
     async fn rotate_block_state(
         &self,
         block_state_id: BlockStateId,
-        rotation: TestRotation,
+        rotation: GameTestRotation,
     ) -> GameTestResult<BlockStateId> {
         let (block, _) = BlockState::from_id_with_block(block_state_id);
         Ok(self

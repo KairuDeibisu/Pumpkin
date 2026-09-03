@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use futures::executor::block_on;
-use pumpkin_gametest::{GameTestBatchReport, GameTestReportSink, GameTestRetryOptions};
+use pumpkin_gametest::{GameTestBatchReport, GameTestReporter, GameTestRetryOptions};
 use pumpkin_protocol::java::client::play::{ArgumentType, CommandSuggestion, SuggestionProviders};
 use pumpkin_util::PermissionLvl;
 use pumpkin_util::identifier::Identifier;
@@ -20,7 +20,7 @@ use crate::command::tree::builder::{argument, literal};
 use crate::command::tree::{CommandTree, RawArgs};
 use crate::command::{CommandError, CommandExecutor, CommandResult, CommandSender};
 use crate::server::Server;
-use crate::server::server_test_manager::{GameTestRequest, enqueue_game_test, stop_game_tests};
+use crate::server::server_test_manager::{GameTestQueueEntry, enqueue_game_test, stop_game_tests};
 
 const NAMES: [&str; 1] = ["test"];
 const DESCRIPTION: &str = "Runs a GameTest test instance.";
@@ -35,11 +35,11 @@ const TEST_GRID_SPACING: i32 = 64;
 const DEFAULT_TESTS_PER_ROW: i32 = 8;
 const TEST_INSTANCE_REGISTRY: Identifier = Identifier::parse_static("minecraft:test_instance");
 
-struct CommandSenderGameTestReportSink {
+struct CommandTestReporter {
     sender: CommandSender,
 }
 
-impl GameTestReportSink for CommandSenderGameTestReportSink {
+impl GameTestReporter for CommandTestReporter {
     fn send_message(&self, message: TextComponent) {
         self.sender.send_message(message);
     }
@@ -182,7 +182,7 @@ impl CommandExecutor for RunExecutor {
         ));
 
         let report = Arc::new(GameTestBatchReport::new(
-            Arc::new(CommandSenderGameTestReportSink {
+            Arc::new(CommandTestReporter {
                 sender: sender.clone(),
             }),
             selected.len(),
@@ -194,7 +194,7 @@ impl CommandExecutor for RunExecutor {
             let row = index / tests_per_row;
             let test_x = base_x + column * TEST_GRID_SPACING;
             let test_z = base_z + row * TEST_GRID_SPACING;
-            block_on(enqueue_game_test(GameTestRequest::new(
+            block_on(enqueue_game_test(GameTestQueueEntry::new(
                 test_id.clone(),
                 world.clone(),
                 test_x,

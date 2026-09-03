@@ -1,4 +1,4 @@
-use super::server_test_manager::{ServerGameTestRunner, drain_game_test_queue};
+use super::server_test_manager::drain_game_test_queue;
 
 use crate::{
     STOP_INTERRUPT,
@@ -10,6 +10,7 @@ use crate::{
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+use pumpkin_gametest::GameTestRunner;
 use tracing::debug;
 
 pub struct Ticker;
@@ -19,7 +20,7 @@ impl Ticker {
     pub fn run(server: &Arc<Server>) {
         let _guard = server.runtime.enter();
         let mut next_tick = Instant::now();
-        let mut game_test_runner = ServerGameTestRunner::new();
+        let mut game_test_runner = GameTestRunner::new();
 
         'ticker: loop {
             let tick_start_time = Instant::now();
