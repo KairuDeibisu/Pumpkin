@@ -1,26 +1,24 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc, LazyLock, RwLock, Weak,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Arc, Weak,
+    atomic::{AtomicBool, Ordering},
 };
 
+use async_trait::async_trait;
+use pumpkin_gametest::{
+    GameTestError, GameTestFunction, GameTestResult, register_function,
+};
 use wasmtime::component::Resource;
 
 use crate::plugin::loader::wasm::wasm_host::{
-    WasmPlugin,
+    PluginInstance, WasmPlugin,
     state::{PluginHostState, WasmResource},
-    wit::v0_1::pumpkin::{
-        self,
-        plugin::gametest::{self, Test as WitTest},
-    },
+    wit::v0_1::pumpkin::plugin::gametest::{self, Test as WitTest},
 };
 
 /// Minimal shared state for a running plugin-backed GameTest.
 ///
-/// For the initial `minecraft:always_pass` smoke test we only need to know
-/// whether the guest called `test.succeed()`.
+/// The first function-based API only needs to know whether the guest called
+/// `test.succeed()` during the test-function callback.
 #[derive(Debug, Default)]
 pub struct GameTestControl {
     succeeded: AtomicBool,
@@ -46,41 +44,38 @@ impl GameTestControl {
 
 type GameTestResource = WasmResource<Arc<GameTestControl>>;
 
-/// A GameTest function supplied by a WASM plugin.
-///
-/// The datapack owns the test instance. This registry only supplies the
-/// executable function referenced by a `minecraft:function` test instance.
-#[derive(Clone)]
-pub struct RegisteredGameTestFunction {
-    pub plugin: Weak<WasmPlugin>,
-    pub handler_id: u32,
+struct WasmGameTestFunction {
+    plugin: Weak<WasmPlugin>,
+    handler_id: u32,
 }
 
-static TEST_FUNCTIONS: LazyLock<RwLock<HashMap<String, RegisteredGameTestFunction>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+#[async_trait]
+impl GameTestFunction for WasmGameTestFunction {
+    async fn run(&self) -> GameTestResult<bool> {
+        let plugin = self.plugin.upgrade().ok_or_else(|| {
+            GameTestError::World("GameTest function belongs to an unloaded plugin".to_string())
+        })?;
+        let control = Arc::new(GameTestControl::new());
+        let mut store = plugin.store.lock().await;
+        let test = store
+            .data_mut()
+            .add_game_test(control.clone())
+            .map_err(|error| GameTestError::World(error.to_string()))?;
 
-/// Looks up a plugin-backed GameTest function.
-///
-/// The returned `Arc<WasmPlugin>` keeps the plugin alive while the callback is
-/// being dispatched.
-#[must_use]
-pub fn get_test_function(id: &str) -> Option<(Arc<WasmPlugin>, u32)> {
-    let registry = TEST_FUNCTIONS
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &plugin.plugin_instance {
+            PluginInstance::V0_1(plugin_instance) => plugin_instance
+                .pumpkin_plugin_gametest_handler()
+                .call_handle_test_function(&mut *store, self.handler_id, test)
+                .await
+                .map_err(|error| GameTestError::World(error.to_string()))?,
+        }
 
-    let function = registry.get(id)?.clone();
-    let plugin = function.plugin.upgrade()?;
-
-    Some((plugin, function.handler_id))
+        Ok(control.has_succeeded())
+    }
 }
 
 impl PluginHostState {
     /// Adds a running GameTest handle to Wasmtime's resource table.
-    ///
-    /// The GameTest runner should create one `GameTestControl`, pass the
-    /// resulting WIT resource to `handle-test-function`, then inspect
-    /// `GameTestControl::has_succeeded()` after the guest callback returns.
     pub fn add_game_test(
         &mut self,
         control: Arc<GameTestControl>,
@@ -114,16 +109,13 @@ impl gametest::Host for PluginHostState {
             .cloned()
             .ok_or_else(|| wasmtime::Error::msg("Plugin not found"))?;
 
-        TEST_FUNCTIONS
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                id,
-                RegisteredGameTestFunction {
-                    plugin,
-                    handler_id: handler,
-                },
-            );
+        register_function(
+            id,
+            Arc::new(WasmGameTestFunction {
+                plugin,
+                handler_id: handler,
+            }),
+        );
 
         Ok(Ok(()))
     }
