@@ -65,7 +65,16 @@ impl ArgumentType for TestInstanceArgumentType {
     type Item = String;
 
     fn parse(&self, reader: &mut StringReader) -> Result<Self::Item, CommandSyntaxError> {
-        Ok(reader.read_unquoted_string())
+        let start = reader.cursor();
+        while let Some(character) = reader.peek() {
+            if is_allowed_in_test_selector(character) {
+                reader.skip();
+            } else {
+                break;
+            }
+        }
+
+        Ok(reader.string()[start..reader.cursor()].to_string())
     }
 
     fn list_suggestions(
@@ -260,6 +269,13 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &PermissionRegistr
             .then(literal("run").then(tests))
             .then(literal("stop").executes(StopExecutor)),
     );
+}
+
+const fn is_allowed_in_test_selector(character: char) -> bool {
+    matches!(
+        character,
+        '0'..='9' | 'a'..='z' | '_' | '-' | '.' | '/' | ':' | '*' | '?'
+    )
 }
 
 fn resource_suggestion_matches(input: &str, candidate: &str) -> bool {
