@@ -11,13 +11,13 @@ pub use block_based::BlockBasedTest;
 pub use error::{GameTestError, GameTestResult};
 pub use helper::GameTestHelper;
 pub use manager::{
-    GameTestBatchReport, GameTestReporter, GameTestRetryOptions, GameTestManager,
-    GameTestRunner,
+    GameTestBatchReport, GameTestManager, GameTestReporter, GameTestRetryOptions, GameTestRunner,
 };
 pub use model::{GameTestDefinition, GameTestRotation, TestType};
-pub use runner::{GameTestSession, TestRunner, GameTestState};
+pub use runner::{GameTestSession, GameTestState, TestRunner};
 pub use structure::{
-    TestStructureInstance, GameTestStructureBlock, GameTestStructureTemplate, TestBlockMode, clear_structure_area,
-    encase_structure, place_structure, place_structure_with_controller_rotation, remove_barriers,
+    GameTestStructureBlock, GameTestStructureTemplate, TestBlockMode, TestStructureInstance,
+    clear_structure_area, encase_structure, place_structure,
+    place_structure_with_controller_rotation, remove_barriers,
 };
 pub use world::GameTestWorld;

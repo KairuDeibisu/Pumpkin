@@ -11,8 +11,9 @@ use crate::block_based::BlockBasedTest;
 use crate::error::{GameTestError, GameTestResult};
 use crate::model::GameTestRotation;
 use crate::structure::{
-    TestStructureInstance, GameTestStructureTemplate, TestBlockMode, GameTestPosition, clear_success_entities,
-    encase_structure, place_structure_with_controller_rotation, remove_barriers,
+    GameTestPosition, GameTestStructureTemplate, TestBlockMode, TestStructureInstance,
+    clear_success_entities, encase_structure, place_structure_with_controller_rotation,
+    remove_barriers,
 };
 use crate::world::GameTestWorld;
 
@@ -46,7 +47,14 @@ impl GameTestSession {
         test_x: i32,
         test_z: i32,
     ) -> Self {
-        Self::new_with_extra_rotation(test, world, template, test_x, test_z, GameTestRotation::None)
+        Self::new_with_extra_rotation(
+            test,
+            world,
+            template,
+            test_x,
+            test_z,
+            GameTestRotation::None,
+        )
     }
 
     #[must_use]
@@ -166,7 +174,9 @@ impl GameTestSession {
             let Some(placement) = &self.placement else {
                 self.finish_failure(
                     0,
-                    GameTestError::World("GameTest is ticking without a placed structure".to_string()),
+                    GameTestError::World(
+                        "GameTest is ticking without a placed structure".to_string(),
+                    ),
                     None,
                 )
                 .await;
@@ -179,11 +189,7 @@ impl GameTestSession {
                 origin.0.y + size[1],
                 origin.0.z + size[2],
             );
-            if !self
-                .world
-                .test_area_loaded_and_ticking(origin, &max)
-                .await
-            {
+            if !self.world.test_area_loaded_and_ticking(origin, &max).await {
                 self.state = GameTestState::SettingUp { elapsed_ticks };
                 return;
             }

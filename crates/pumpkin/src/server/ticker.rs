@@ -7,10 +7,10 @@ use crate::{
     },
     server::Server,
 };
+use pumpkin_gametest::GameTestRunner;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
-use pumpkin_gametest::GameTestRunner;
 use tracing::debug;
 
 pub struct Ticker;

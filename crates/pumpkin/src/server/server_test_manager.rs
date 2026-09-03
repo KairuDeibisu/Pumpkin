@@ -5,8 +5,8 @@ use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use async_trait::async_trait;
 use pumpkin_data::{BlockState, BlockStateId};
 use pumpkin_gametest::{
-    BlockBasedTest, GameTestError, GameTestReporter, GameTestResult, GameTestWorld,
-    GameTestManager, GameTestRunner, GameTestStructureTemplate, GameTestRotation, GameTestSession,
+    BlockBasedTest, GameTestError, GameTestManager, GameTestReporter, GameTestResult,
+    GameTestRotation, GameTestRunner, GameTestSession, GameTestStructureTemplate, GameTestWorld,
 };
 pub use pumpkin_gametest::{GameTestBatchReport, GameTestRetryOptions};
 use pumpkin_nbt::NbtCompound;
@@ -99,11 +99,7 @@ pub async fn stop_game_tests() {
     STOP_GAME_TESTS.store(true, Ordering::Release);
 }
 
-
-pub(super) async fn drain_game_test_queue(
-    server: &Arc<Server>,
-    runner: &mut GameTestRunner,
-) {
+pub(super) async fn drain_game_test_queue(server: &Arc<Server>, runner: &mut GameTestRunner) {
     // Hold the same queue mutex used by stop_game_tests while consuming the stop
     // flag and draining requests. This closes the async race where a new /test run
     // could otherwise be drained before the old runner was cleared.

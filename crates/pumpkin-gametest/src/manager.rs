@@ -71,9 +71,8 @@ impl GameTestBatchReport {
     }
 
     pub fn fail_to_start(&self, error: &GameTestError) {
-        self.reporter.send_message(
-            TextComponent::text(error.to_string()).color_named(NamedColor::Red),
-        );
+        self.reporter
+            .send_message(TextComponent::text(error.to_string()).color_named(NamedColor::Red));
         self.finish_test(true, 1, 0);
     }
 
@@ -291,11 +290,8 @@ impl GameTestManager {
             return;
         }
 
-        self.report.finish_test(
-            self.run.test.is_required(),
-            self.attempts,
-            self.successes,
-        );
+        self.report
+            .finish_test(self.run.test.is_required(), self.attempts, self.successes);
         self.done = true;
     }
 

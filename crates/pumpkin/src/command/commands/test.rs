@@ -117,12 +117,14 @@ impl CommandExecutor for RunExecutor {
             .filter(|name| resource_selector_matches(selector, name))
             .collect();
         if selected.is_empty() {
-            return Err(CommandError::CommandFailed(pumpkin_macros::translate_cross!(
-                java::ARGUMENT_RESOURCE_SELECTOR_NOT_FOUND,
-                java::ARGUMENT_RESOURCE_SELECTOR_NOT_FOUND,
-                TextComponent::text(selector.to_string()),
-                TextComponent::text(TEST_INSTANCE_REGISTRY.to_string()),
-            )));
+            return Err(CommandError::CommandFailed(
+                pumpkin_macros::translate_cross!(
+                    java::ARGUMENT_RESOURCE_SELECTOR_NOT_FOUND,
+                    java::ARGUMENT_RESOURCE_SELECTOR_NOT_FOUND,
+                    TextComponent::text(selector.to_string()),
+                    TextComponent::text(TEST_INSTANCE_REGISTRY.to_string()),
+                ),
+            ));
         }
 
         // Vanilla TestCommand::run always clears the current GameTestTicker first.
