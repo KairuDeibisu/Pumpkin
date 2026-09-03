@@ -100,6 +100,7 @@ pub fn to_registry_entry(entry_id: String, instance: &TestInstance) -> RegistryE
         "type",
         match instance.instance_type {
             TestType::BlockBased => "minecraft:block_based",
+            TestType::Function => "minecraft:function",
         }
         .to_string(),
     );
