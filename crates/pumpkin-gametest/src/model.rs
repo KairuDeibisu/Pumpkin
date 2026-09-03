@@ -6,6 +6,8 @@ use serde_json::Value;
 pub enum TestType {
     #[serde(rename = "minecraft:block_based")]
     BlockBased,
+    #[serde(rename = "minecraft:function")]
+    Function,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -71,6 +73,8 @@ pub struct GameTestDefinition {
     pub instance_type: TestType,
     pub environment: Value,
     pub structure: String,
+    #[serde(default)]
+    pub function: Option<String>,
     pub max_ticks: i32,
     #[serde(default)]
     pub setup_ticks: i32,
@@ -98,6 +102,10 @@ impl GameTestDefinition {
             && self.max_attempts > 0
             && self.required_successes > 0
             && (0..=128).contains(&self.padding)
+            && match self.instance_type {
+                TestType::BlockBased => true,
+                TestType::Function => self.function.as_ref().is_some_and(|id| !id.is_empty()),
+            }
     }
 }
 
