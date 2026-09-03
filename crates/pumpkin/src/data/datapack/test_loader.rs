@@ -104,6 +104,9 @@ pub fn to_registry_entry(entry_id: String, instance: &TestInstance) -> RegistryE
         }
         .to_string(),
     );
+    if let Some(function) = &instance.function {
+        nbt.put_string("function", function.clone());
+    }
     nbt.put("environment", json_value_to_nbt(&instance.environment));
     nbt.put_string("structure", instance.structure.clone());
     nbt.put_int("max_ticks", instance.max_ticks);
