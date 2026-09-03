@@ -1,6 +1,7 @@
 use pumpkin_data::{Block, BlockStateId};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
+use pumpkin_world::tick::TickPriority;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::info;
@@ -197,6 +198,12 @@ impl TestBlockBlockEntity {
         if mode == TestBlockMode::Start {
             self.set_powered(true);
             world.update_neighbors(&self.position, None);
+
+            // START is a one-tick redstone pulse. TestBlock::on_scheduled_tick
+            // calls reset(), which drops the signal and notifies neighbors again.
+            let block = world.get_block(&self.position);
+            world.schedule_block_tick(block, self.position, 1, TickPriority::Normal);
+
             self.log(mode);
             return;
         }
