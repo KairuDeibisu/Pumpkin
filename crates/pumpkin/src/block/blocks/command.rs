@@ -138,12 +138,7 @@ impl CommandBlock {
         }
     }
 
-    fn chain_execute(
-        server: &Arc<Server>,
-        world: &Arc<World>,
-        start: BlockPos,
-        mut direction: Facing,
-    ) {
+    fn chain_execute(server: &Arc<Server>, world: &Arc<World>, start: BlockPos) {
         let mut i = u16::MAX;
         let mut pos = start;
 
@@ -190,8 +185,7 @@ impl CommandBlock {
             }
 
             // Vanilla follows each chain block's own FACING, allowing chains to turn.
-            direction = props.facing;
-            pos = pos.offset(direction.to_block_direction().to_offset());
+            pos = pos.offset(props.facing.to_block_direction().to_offset());
 
             i -= 1;
             if i == 0 {
@@ -316,7 +310,6 @@ impl BlockBehaviour for CommandBlock {
                 &server,
                 &world,
                 position.offset(facing.to_block_direction().to_offset()),
-                facing,
             );
         } else if props.conditional {
             command_entity.success_count.store(0, Ordering::Release);
