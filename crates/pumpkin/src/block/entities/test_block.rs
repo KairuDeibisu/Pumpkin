@@ -1,6 +1,5 @@
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
-use pumpkin_world::tick::TickPriority;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::info;
@@ -124,7 +123,7 @@ impl TestBlockBlockEntity {
     pub fn new(position: BlockPos) -> Self {
         Self {
             position,
-            mode: Mutex::new("FAIL".to_string()),
+            mode: Mutex::new("START".to_string()),
             message: Mutex::new(String::new()),
             powered: AtomicBool::new(false),
             triggered: AtomicBool::new(false),
@@ -169,8 +168,6 @@ impl TestBlockBlockEntity {
         if mode == TestBlockMode::Start {
             self.set_powered(true);
             world.update_neighbors(&self.position, None);
-            let block = world.get_block(&self.position);
-            world.schedule_block_tick(block, self.position, 1, TickPriority::Normal);
             self.log();
             return;
         }
