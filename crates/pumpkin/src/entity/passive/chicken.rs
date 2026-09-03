@@ -150,24 +150,15 @@ impl Mob for ChickenEntity {
         let entity = self.get_entity();
         let is_baby = entity.age.load(Ordering::Relaxed) < 0;
         if is_baby {
-            entity.send_meta_data(
-                &[pumpkin_protocol::java::client::play::Metadata::new(
-                    pumpkin_data::tracked_data::chicken::BABY_ID,
-                    true,
-                )],
-                None,
-            );
+            entity.set_synced_data(pumpkin_data::tracked_data::chicken::BABY_ID, true);
         }
-        entity.send_meta_data(
-            &[pumpkin_protocol::java::client::play::Metadata::new(
-                pumpkin_data::tracked_data::chicken::VARIANT,
-                VarInt(self.variant.load(Ordering::Relaxed) as i32),
-            )],
-            None,
+        entity.set_synced_data(
+            pumpkin_data::tracked_data::chicken::VARIANT,
+            VarInt(self.variant.load(Ordering::Relaxed) as i32),
         );
     }
 
-    fn mob_tick<'a>(&'a self, _caller: &'a Arc<dyn EntityBase>) {
+    fn mob_tick(&self, _caller: &dyn EntityBase) {
         if self.mob_entity.living_entity.dead.load(Relaxed) {
             return;
         }

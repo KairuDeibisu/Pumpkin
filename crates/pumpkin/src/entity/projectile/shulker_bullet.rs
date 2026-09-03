@@ -272,6 +272,10 @@ impl ShulkerBulletEntity {
 }
 
 impl EntityBase for ShulkerBulletEntity {
+    fn get_owner_id(&self) -> Option<i32> {
+        Some(self.owner_id)
+    }
+
     fn get_entity(&self) -> &Entity {
         &self.entity
     }
@@ -318,7 +322,7 @@ impl EntityBase for ShulkerBulletEntity {
         true
     }
     #[allow(clippy::too_many_lines)]
-    fn tick<'a>(&'a self, _caller: &'a Arc<dyn EntityBase>, _server: &'a Server) {
+    fn tick(&self, _caller: &dyn EntityBase, _server: &Server) {
         if self.has_hit.load(Ordering::Relaxed) {
             return;
         }

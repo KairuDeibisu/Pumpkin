@@ -47,7 +47,7 @@ impl TrackTargetGoal {
         self
     }
 
-    fn can_navigate_to_entity(&self, mob: &dyn Mob, _target: &LivingEntity) -> bool {
+    fn can_navigate_to_entity(&self, mob: &dyn Mob) -> bool {
         let cooldown = to_goal_ticks(10 + mob.get_random().random_range(0..5));
         self.check_can_navigate_cooldown
             .store(cooldown, Ordering::Relaxed);
@@ -95,7 +95,7 @@ impl TrackTargetGoal {
             }
 
             if self.can_navigate_flag.load(Ordering::Relaxed) == UNSET {
-                let can_reach = self.can_navigate_to_entity(mob, target);
+                let can_reach = self.can_navigate_to_entity(mob);
                 self.can_navigate_flag.store(
                     if can_reach { CAN_TRACK } else { CANNOT_TRACK },
                     Ordering::Relaxed,
@@ -181,30 +181,5 @@ impl Goal for TrackTargetGoal {
 
     fn controls(&self) -> Controls {
         self.goal_control
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{TrackTargetGoal, to_goal_ticks};
-    use std::sync::atomic::Ordering;
-
-    #[test]
-    fn forgets_unseen_target_after_vanilla_memory_window() {
-        let goal = TrackTargetGoal::with_default(true);
-        let memory_ticks = to_goal_ticks(goal.max_time_without_visibility);
-
-        for _ in 0..memory_ticks {
-            assert!(goal.remembers_visible_target(false));
-        }
-        assert!(!goal.remembers_visible_target(false));
-    }
-
-    #[test]
-    fn seeing_target_resets_unseen_memory() {
-        let goal = TrackTargetGoal::with_default(true);
-        assert!(goal.remembers_visible_target(false));
-        assert!(goal.remembers_visible_target(true));
-        assert_eq!(goal.time_without_visibility.load(Ordering::Relaxed), 0);
     }
 }

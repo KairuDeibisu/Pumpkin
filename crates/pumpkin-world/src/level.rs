@@ -355,17 +355,20 @@ impl Level {
 
         let handle_count = handles.len();
         info!("Joining {} threads for {}...", handle_count, world_id);
-        let join_task = tokio::task::spawn_blocking(move || {
-            let mut failed_count = 0;
-            for handle in handles {
-                if handle.join().is_err() {
-                    failed_count += 1;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = std::thread::Builder::new()
+            .name("Thread-Joiner".into())
+            .spawn(move || {
+                let mut failed_count = 0;
+                for handle in handles {
+                    if handle.join().is_err() {
+                        failed_count += 1;
+                    }
                 }
-            }
-            failed_count
-        });
+                let _ = tx.send(failed_count);
+            });
 
-        match timeout(Duration::from_secs(3), join_task).await {
+        match timeout(Duration::from_secs(3), rx).await {
             Ok(Ok(failed_count)) => {
                 if failed_count > 0 {
                     warn!(
@@ -495,7 +498,13 @@ impl Level {
         });
     }
 
-    pub fn get_tick_data(&self, active_chunks: &FxHashSet<Vector2<i32>>) -> TickData {
+    pub fn get_tick_data(
+        &self,
+        active_chunks: &FxHashSet<Vector2<i32>>,
+        random_tick_speed: i64,
+    ) -> TickData {
+        let samples_per_section = random_tick_speed.max(0);
+
         let mut ticks = TickData {
             block_ticks: Vec::new(),
             fluid_ticks: Vec::new(),
@@ -525,7 +534,7 @@ impl Level {
                             continue;
                         }
                         let y_base = min_y + (i as i32 * 16);
-                        for _ in 0..3 {
+                        for _ in 0..samples_per_section {
                             let r = rand::random::<u32>();
                             let x_offset = (r & 0xF) as usize;
                             let z_offset = (r >> 8 & 0xF) as usize;
@@ -625,6 +634,7 @@ impl Level {
             return res;
         }
         let chunk = self.fetch_chunk(pos).await;
+        self.loaded_chunks.insert(pos, chunk.clone());
         f(&chunk)
     }
 

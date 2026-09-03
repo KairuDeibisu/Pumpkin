@@ -8,6 +8,7 @@ use std::{
     io::{Read, SeekFrom, Write},
     marker::PhantomData,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -19,7 +20,7 @@ use tracing::{debug, trace};
 use crate::chunk::{
     ChunkParsingError, ChunkReadingError, ChunkSerializingError, ChunkWritingError,
     CompressionError,
-    io::{ChunkSerializer, Dirtiable, LoadedData},
+    io::{ChunkSerializer, Dirtiable, LoadedData, run_blocking},
 };
 
 /// The side size of a region in chunks (one region is 32x32 chunks)
@@ -603,7 +604,7 @@ impl<S: SingleChunkDataSerializer + 'static> ChunkSerializer for AnvilChunkFile<
     #[expect(clippy::too_many_lines)]
     async fn update_chunk(
         &mut self,
-        chunk: &Self::Data,
+        chunk: Arc<Self::Data>,
         chunk_config: &Self::ChunkConfig,
     ) -> Result<(), ChunkWritingError> {
         let epoch = SystemTime::now()
@@ -616,7 +617,14 @@ impl<S: SingleChunkDataSerializer + 'static> ChunkSerializer for AnvilChunkFile<
         let compression_type = self.chunks_data[index]
             .as_ref()
             .and_then(|chunk_data| chunk_data.serialized_data.compression);
-        let new_chunk_data = AnvilChunkData::from_chunk(chunk, compression_type, chunk_config)?;
+        let chunk_config_snapshot = chunk_config.clone();
+        let new_chunk_data = run_blocking(move || {
+            AnvilChunkData::from_chunk(&*chunk, compression_type, &chunk_config_snapshot)
+        })
+        .await
+        .map_err(|_| {
+            ChunkWritingError::IoError(std::io::Error::other("chunk serialization task failed"))
+        })??;
 
         let mut write_action = self.write_action.lock().await;
         if !chunk_config.write_in_place {
@@ -777,24 +785,37 @@ impl<S: SingleChunkDataSerializer + 'static> ChunkSerializer for AnvilChunkFile<
         chunks: Vec<Vector2<i32>>,
         stream: tokio::sync::mpsc::Sender<LoadedData<Self::Data, ChunkReadingError>>,
     ) {
-        // Don't par iter here so we can prevent backpressure with the await in the async
-        // runtime
-        for chunk in chunks {
-            let index = Self::get_chunk_index(chunk.x, chunk.y);
-            let is_ok = match &self.chunks_data[index] {
-                None => stream.send(LoadedData::Missing(chunk)).await.is_ok(),
-                Some(chunk_metadata) => {
-                    let result = match chunk_metadata.serialized_data.to_chunk(chunk) {
-                        Ok(chunk_res) => LoadedData::Loaded(chunk_res),
-                        Err(err) => LoadedData::Error((chunk, err)),
-                    };
+        let chunk_items: Vec<(Vector2<i32>, Option<AnvilChunkData>)> = chunks
+            .into_iter()
+            .map(|chunk| {
+                let index = Self::get_chunk_index(chunk.x, chunk.y);
+                let data = self.chunks_data[index]
+                    .as_ref()
+                    .map(|chunk_metadata| chunk_metadata.serialized_data.clone());
+                (chunk, data)
+            })
+            .collect();
 
-                    stream.send(result).await.is_ok()
-                }
-            };
+        let (tx, mut rx) = tokio::sync::mpsc::channel(chunk_items.len().max(1));
 
-            if !is_ok {
-                // Stream is closed. Stop unneeded work and IO
+        rayon::spawn(move || {
+            use rayon::prelude::*;
+            chunk_items
+                .into_par_iter()
+                .for_each(|(chunk, serialized_data)| {
+                    let result = serialized_data.map_or_else(
+                        || LoadedData::Missing(chunk),
+                        |data| match data.to_chunk(chunk) {
+                            Ok(chunk_res) => LoadedData::Loaded(chunk_res),
+                            Err(err) => LoadedData::Error((chunk, err)),
+                        },
+                    );
+                    let _ = tx.blocking_send(result);
+                });
+        });
+
+        while let Some(item) = rx.recv().await {
+            if stream.send(item).await.is_err() {
                 return;
             }
         }

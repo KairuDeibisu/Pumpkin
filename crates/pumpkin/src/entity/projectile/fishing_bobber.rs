@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::entity::projectile::{ProjectileHit, is_projectile};
@@ -8,7 +7,6 @@ use crate::{
 };
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::sound::{Sound, SoundCategory};
-use pumpkin_protocol::java::client::play::Metadata;
 use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::vector3::Vector3;
 
@@ -92,7 +90,7 @@ impl FishingBobberEntity {
     }
 
     #[expect(clippy::too_many_lines)]
-    pub fn process_tick<'a>(&'a self, caller: &'a Arc<dyn EntityBase>, _server: &'a Server) {
+    pub fn process_tick(&self, caller: &dyn EntityBase) {
         let entity = self.get_entity();
         let world = entity.world.load();
 
@@ -180,7 +178,7 @@ impl FishingBobberEntity {
         .expand(0.3, 0.3, 0.3);
 
         // Basic block collision to stop bobber
-        let (block_cols, _) = world.get_block_collisions(search_box, caller.as_ref());
+        let (block_cols, _) = world.get_block_collisions(search_box, caller);
         if !block_cols.is_empty() {
             self.in_ground.store(true, Ordering::Relaxed);
             entity.velocity.store(Vector3::new(0.0, 0.0, 0.0));
@@ -205,12 +203,9 @@ impl FishingBobberEntity {
             if ebb.intersects(&search_box) {
                 self.hooked_entity_id
                     .store(cand.get_entity().entity_id, Ordering::Relaxed);
-                entity.send_meta_data(
-                    &[Metadata::new(
-                        pumpkin_data::tracked_data::fishing_bobber::HOOKED_ENTITY,
-                        cand.get_entity().entity_id + 1,
-                    )],
-                    None,
+                entity.set_synced_data(
+                    pumpkin_data::tracked_data::fishing_bobber::HOOKED_ENTITY,
+                    cand.get_entity().entity_id + 1,
                 );
                 return;
             }
@@ -219,6 +214,10 @@ impl FishingBobberEntity {
 }
 
 impl EntityBase for FishingBobberEntity {
+    fn get_owner_id(&self) -> Option<i32> {
+        Some(self.owner_id)
+    }
+
     fn get_entity(&self) -> &Entity {
         &self.entity
     }
@@ -234,7 +233,7 @@ impl EntityBase for FishingBobberEntity {
         self.has_hit.store(true, Ordering::Relaxed);
     }
 
-    fn tick<'a>(&'a self, caller: &'a Arc<dyn EntityBase>, server: &'a Server) {
-        self.process_tick(caller, server);
+    fn tick(&self, caller: &dyn EntityBase, _server: &Server) {
+        self.process_tick(caller);
     }
 }

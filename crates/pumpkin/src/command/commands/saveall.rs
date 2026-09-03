@@ -4,7 +4,7 @@ use pumpkin_util::permission::{Permission, PermissionDefault, PermissionRegistry
 use pumpkin_util::text::TextComponent;
 use tracing::error;
 
-use crate::command::argument_builder::{ArgumentBuilder, command};
+use crate::command::argument_builder::{ArgumentBuilder, command, literal};
 use crate::command::context::command_context::CommandContext;
 use crate::command::node::dispatcher::CommandDispatcher;
 use crate::command::node::{CommandExecutor, CommandExecutorResult};
@@ -27,10 +27,10 @@ impl CommandExecutor for SaveAllExecutor {
         );
 
         let server_arc = context.server().clone();
+        let server_clone = server_arc.clone();
         let source = context.source.clone();
-        let runtime = server_arc.runtime.clone();
-        runtime.spawn(async move {
-            if let Err(err) = server_arc.save_all().await {
+        server_arc.spawn_task(async move {
+            if let Err(err) = server_clone.save_all().await {
                 error!("Failed to save server data: {err}");
                 source.send_error(TextComponent::translate_cross(
                     translation::java::COMMANDS_SAVE_FAILED,
@@ -63,6 +63,7 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &PermissionRegistr
     dispatcher.register(
         command("save-all", DESCRIPTION)
             .requires(PERMISSION)
-            .executes(SaveAllExecutor),
+            .executes(SaveAllExecutor)
+            .then(literal("flush").executes(SaveAllExecutor)),
     );
 }

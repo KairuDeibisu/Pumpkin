@@ -36,7 +36,7 @@ impl NormalNoise {
 
     #[inline]
     fn get_value(&self, x: f64, y: f64, z: f64) -> f64 {
-        self.0.sample(x, y, z)
+        self.0.sample(x as f32, y as f32, z as f32) as f64
     }
 }
 
@@ -325,7 +325,7 @@ impl GeodeFeature {
 
                     // Only place if the target block is replaceable (air/water)
                     let is_air = place_state.is_air();
-                    let is_water = place_raw.to_block().name == "water";
+                    let is_water = place_raw.to_block_id() == BlockId::WATER;
 
                     if is_air || is_water {
                         let mut final_codec = base_codec.clone();

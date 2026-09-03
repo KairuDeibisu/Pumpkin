@@ -1,5 +1,5 @@
+use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, RwLock};
 
 use crate::entity::projectile::splash_potion::extinguish_fire_if_water_potion;
 use crate::{
@@ -64,6 +64,10 @@ impl LingeringPotionEntity {
 }
 
 impl EntityBase for LingeringPotionEntity {
+    fn get_owner_id(&self) -> Option<i32> {
+        self.thrown.owner_id
+    }
+
     fn init_data_tracker(&self) {
         let entity = self.get_entity();
         let stack = self
@@ -72,19 +76,14 @@ impl EntityBase for LingeringPotionEntity {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Sync the item stack so the client renders the correct potion type
-        entity.send_meta_data(
-            &[pumpkin_protocol::java::client::play::Metadata::new(
-                pumpkin_data::tracked_data::lingering_potion::ITEM_STACK,
-                &pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer::from(
-                    stack.clone(),
-                ),
-            )],
-            None,
+        entity.set_synced_data(
+            pumpkin_data::tracked_data::lingering_potion::ITEM_STACK,
+            pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer::from(stack.clone()),
         );
     }
 
-    fn tick<'a>(&'a self, caller: &'a Arc<dyn EntityBase>, server: &'a Server) {
-        self.thrown.process_tick(caller, server);
+    fn tick(&self, caller: &dyn EntityBase, _server: &Server) {
+        self.thrown.process_tick(caller);
     }
 
     fn get_entity(&self) -> &Entity {

@@ -8,7 +8,6 @@ use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_nbt::compound::NbtCompound;
-use pumpkin_protocol::java::client::play::Metadata;
 use pumpkin_util::GameMode;
 
 use crate::entity::{
@@ -16,7 +15,8 @@ use crate::entity::{
     ai::goal::{
         active_target::ActiveTargetGoal, look_around::RandomLookAroundGoal,
         look_at_entity::LookAtEntityGoal, melee_attack::MeleeAttackGoal,
-        offer_flower::OfferFlowerGoal, revenge::RevengeGoal, wander_around::WanderAroundGoal,
+        move_towards_target::MoveTowardsTargetGoal, offer_flower::OfferFlowerGoal,
+        revenge::RevengeGoal, wander_around::WanderAroundGoal,
     },
     mob::{Mob, MobEntity},
     player::Player,
@@ -60,17 +60,18 @@ impl IronGolemEntity {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
 
             goal_selector.add_goal(1, Box::new(MeleeAttackGoal::new(1.0, true)));
+            goal_selector.add_goal(2, Box::new(MoveTowardsTargetGoal::new(0.9, 32.0)));
+            goal_selector.add_goal(4, Box::new(WanderAroundGoal::new(0.6)));
             goal_selector.add_goal(5, Box::new(OfferFlowerGoal::new()));
-            goal_selector.add_goal(6, Box::new(WanderAroundGoal::new(0.6)));
             goal_selector.add_goal(
                 7,
                 LookAtEntityGoal::with_default(mob_weak, &EntityType::PLAYER, 6.0),
             );
             goal_selector.add_goal(8, Box::new(RandomLookAroundGoal::default()));
 
-            target_selector.add_goal(1, Box::new(RevengeGoal::new(true)));
+            target_selector.add_goal(2, Box::new(RevengeGoal::new(true)));
             target_selector.add_goal(
-                2,
+                3,
                 ActiveTargetGoal::with_default(&mob_arc.mob_entity, &EntityType::PLAYER, false),
             );
             target_selector.add_goal(
@@ -91,13 +92,7 @@ impl IronGolemEntity {
         self.player_created.store(value, Ordering::Relaxed);
         let entity = self.get_entity();
         let flag: u8 = u8::from(value);
-        entity.send_meta_data(
-            &[Metadata::new(
-                pumpkin_data::tracked_data::iron_golem::FLAGS_ID,
-                flag,
-            )],
-            None,
-        );
+        entity.set_synced_data(pumpkin_data::tracked_data::iron_golem::FLAGS_ID, flag);
     }
 
     pub fn offer_flower(&self, offer: bool) {
@@ -133,7 +128,7 @@ impl Mob for IronGolemEntity {
         &self.mob_entity
     }
 
-    fn mob_tick<'a>(&'a self, _caller: &'a Arc<dyn EntityBase>) {
+    fn mob_tick(&self, _caller: &dyn EntityBase) {
         let attack_tick = self.attack_animation_tick.load(Ordering::Relaxed);
         if attack_tick > 0 {
             self.attack_animation_tick.fetch_sub(1, Ordering::Relaxed);
@@ -148,13 +143,7 @@ impl Mob for IronGolemEntity {
     fn mob_init_data_tracker(&self) {
         let entity = self.get_entity();
         let flag: u8 = u8::from(self.is_player_created());
-        entity.send_meta_data(
-            &[Metadata::new(
-                pumpkin_data::tracked_data::iron_golem::FLAGS_ID,
-                flag,
-            )],
-            None,
-        );
+        entity.set_synced_data(pumpkin_data::tracked_data::iron_golem::FLAGS_ID, flag);
     }
 
     fn mob_interact(&self, player: &Arc<Player>, item_stack: &mut ItemStack) -> bool {

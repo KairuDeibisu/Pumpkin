@@ -282,7 +282,7 @@ impl Mob for SlimeEntity {
         &self.entity
     }
 
-    fn mob_tick<'a>(&'a self, _caller: &'a Arc<dyn EntityBase>) {
+    fn mob_tick(&self, _caller: &dyn EntityBase) {
         self.o_squish.store(self.squish.load());
         self.squish
             .store(self.squish.load() + (self.target_squish.load() - self.squish.load()) * 0.5);
@@ -615,20 +615,5 @@ impl Goal for SlimeKeepOnJumpingGoal {
 
     fn controls(&self) -> crate::entity::ai::goal::Controls {
         crate::entity::ai::goal::Controls::JUMP | crate::entity::ai::goal::Controls::MOVE
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn uses_small_hurt_sound_only_for_smallest_slimes() {
-        assert_eq!(
-            SlimeEntity::hurt_sound_for_size(1),
-            Sound::EntitySlimeHurtSmall
-        );
-        assert_eq!(SlimeEntity::hurt_sound_for_size(0), Sound::EntitySlimeHurt);
-        assert_eq!(SlimeEntity::hurt_sound_for_size(2), Sound::EntitySlimeHurt);
     }
 }

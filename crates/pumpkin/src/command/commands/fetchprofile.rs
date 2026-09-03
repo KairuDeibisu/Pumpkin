@@ -155,14 +155,10 @@ async fn fetch_profile_by_name_helper(server: &Server, name: &str) -> Option<Gam
         .java
         .authentication
         .clone();
-    let name_string = name.to_string();
-
-    let mojang_res =
-        tokio::task::spawn_blocking(move || lookup_profile_by_name(&name_string, &auth_config))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .flatten();
+    let mojang_res = lookup_profile_by_name(name, &auth_config)
+        .await
+        .ok()
+        .flatten();
 
     if let Some((uuid, resolved_name)) = mojang_res {
         server
@@ -177,12 +173,10 @@ async fn fetch_profile_by_name_helper(server: &Server, name: &str) -> Option<Gam
             .java
             .authentication
             .clone();
-        let full_profile =
-            tokio::task::spawn_blocking(move || fetch_profile_by_uuid(uuid, &auth_config_clone))
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .flatten();
+        let full_profile = fetch_profile_by_uuid(uuid, &auth_config_clone)
+            .await
+            .ok()
+            .flatten();
 
         return Some(full_profile.unwrap_or_else(|| GameProfile {
             id: uuid,
@@ -233,11 +227,7 @@ async fn fetch_profile_by_id_helper(server: &Server, id: Uuid) -> Option<GamePro
         .java
         .authentication
         .clone();
-    let mojang_res = tokio::task::spawn_blocking(move || fetch_profile_by_uuid(id, &auth_config))
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .flatten();
+    let mojang_res = fetch_profile_by_uuid(id, &auth_config).await.ok().flatten();
 
     if let Some(profile) = mojang_res {
         server
@@ -272,8 +262,7 @@ impl CommandExecutor for ResolveNameExecutor {
         let name_owned = name.to_string();
 
         let name_component = TextComponent::text(name_owned.clone());
-        let runtime = server.runtime.clone();
-        runtime.spawn(async move {
+        tokio::spawn(async move {
             let result = fetch_profile_by_name_helper(&server, &name_owned).await;
             match result {
                 Some(profile) => {
@@ -307,8 +296,7 @@ impl CommandExecutor for ResolveIdExecutor {
         let source = context.source.clone();
 
         let id_component = TextComponent::text(id.to_string());
-        let runtime = server.runtime.clone();
-        runtime.spawn(async move {
+        tokio::spawn(async move {
             let result = fetch_profile_by_id_helper(&server, id).await;
             match result {
                 Some(profile) => {

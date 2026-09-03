@@ -784,7 +784,7 @@ impl Mob for WanderingTraderEntity {
         true
     }
 
-    fn mob_tick<'a>(&'a self, _caller: &'a Arc<dyn EntityBase>) {
+    fn mob_tick(&self, _caller: &dyn EntityBase) {
         // Despawn delay handling (vanilla aiStep / maybeDespawn)
         if !self.is_trading.load(Ordering::Relaxed) {
             let delay = self.despawn_delay.load(Ordering::Relaxed);
@@ -1277,7 +1277,7 @@ mod tests {
     #[test]
     fn invisibility_potion_item_stack_creation() {
         let potion = create_invisibility_potion();
-        assert!(potion.item == &Item::POTION);
+        assert_eq!(potion.item, &Item::POTION);
         assert_eq!(potion.item_count, 1);
         assert!(!potion.patch.is_empty());
     }

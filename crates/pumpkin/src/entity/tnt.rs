@@ -2,16 +2,13 @@ use super::{Entity, EntityBase, living::LivingEntity};
 use crate::server::Server;
 use core::f32;
 use pumpkin_data::Block;
-use pumpkin_protocol::{codec::var_int::VarInt, java::client::play::Metadata};
+use pumpkin_protocol::codec::var_int::VarInt;
 use pumpkin_util::math::vector3::Vector3;
 use std::{
     f64::consts::TAU,
-    sync::{
-        Arc,
-        atomic::{
-            AtomicU32,
-            Ordering::{self, Relaxed},
-        },
+    sync::atomic::{
+        AtomicU32,
+        Ordering::{self, Relaxed},
     },
 };
 
@@ -32,14 +29,14 @@ impl TNTEntity {
 }
 
 impl EntityBase for TNTEntity {
-    fn tick(&self, caller: &Arc<dyn EntityBase>, server: &Server) {
+    fn tick(&self, caller: &dyn EntityBase, _server: &Server) {
         let entity = &self.entity;
 
         let mut velo = entity.velocity.load();
         velo.y -= self.get_gravity();
 
         entity.move_entity(caller, velo);
-        entity.tick_block_collisions(caller, server);
+        entity.tick_block_collisions(caller);
 
         // Read back what actually happened instead of reusing the pre-move
         // value: `move_entity` clamps on collision, and an explosion may have
@@ -81,18 +78,13 @@ impl EntityBase for TNTEntity {
         self.entity
             .set_velocity(Vector3::new(-pos.sin() * 0.02, 0.2, -pos.cos() * 0.02));
 
-        self.entity.send_meta_data(
-            &[
-                Metadata::new(
-                    pumpkin_data::tracked_data::tnt::FUSE_ID,
-                    VarInt(self.fuse.load(Relaxed) as i32),
-                ),
-                Metadata::new(
-                    pumpkin_data::tracked_data::tnt::BLOCK_STATE_ID,
-                    VarInt(i32::from(Block::TNT.default_state.id.as_u16())),
-                ),
-            ],
-            None,
+        self.entity.set_synced_data(
+            pumpkin_data::tracked_data::tnt::FUSE_ID,
+            VarInt(self.fuse.load(Relaxed) as i32),
+        );
+        self.entity.set_synced_data(
+            pumpkin_data::tracked_data::tnt::BLOCK_STATE_ID,
+            VarInt(i32::from(Block::TNT.default_state.id.as_u16())),
         );
     }
 

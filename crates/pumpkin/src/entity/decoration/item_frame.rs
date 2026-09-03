@@ -2,19 +2,19 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::entity::player::Player;
-use crate::entity::{Entity, EntityBase, EntityBaseFuture, living::LivingEntity};
+use crate::entity::{Entity, EntityBase, living::LivingEntity};
 use crossbeam::atomic::AtomicCell;
 use pumpkin_data::BlockDirection;
 use pumpkin_data::damage::DamageType;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
-use pumpkin_data::packet::CURRENT_MC_VERSION;
 use pumpkin_data::sound::Sound;
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer;
 use pumpkin_protocol::java::client::play::{CSetEntityMetadata, Metadata};
 use pumpkin_util::math::vector3::Vector3;
+use pumpkin_util::version::JavaMinecraftVersion;
 
 /// An item frame or glow item frame.
 ///
@@ -129,12 +129,9 @@ impl ItemFrameEntity {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = item_stack;
 
-        self.entity.send_meta_data(
-            &[Metadata::new(
-                pumpkin_data::tracked_data::item_frame::ITEM,
-                &item_serializer,
-            )],
-            None,
+        self.entity.set_synced_data(
+            pumpkin_data::tracked_data::item_frame::ITEM,
+            item_serializer,
         );
 
         if play_sound {
@@ -156,13 +153,8 @@ impl ItemFrameEntity {
         let rot = rotation % 8;
         self.rotation.store(rot, Ordering::Relaxed);
 
-        self.entity.send_meta_data(
-            &[Metadata::new(
-                pumpkin_data::tracked_data::item_frame::ROTATION,
-                rot as i32,
-            )],
-            None,
-        );
+        self.entity
+            .set_synced_data(pumpkin_data::tracked_data::item_frame::ROTATION, rot as i32);
 
         if update_neighbours {
             let world = self.entity.world.load();
@@ -247,12 +239,9 @@ impl ItemFrameEntity {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = ItemStack::EMPTY.clone();
         let item_serializer = ItemStackSerializer::from(ItemStack::EMPTY.clone());
-        self.entity.send_meta_data(
-            &[Metadata::new(
-                pumpkin_data::tracked_data::item_frame::ITEM,
-                &item_serializer,
-            )],
-            None,
+        self.entity.set_synced_data(
+            pumpkin_data::tracked_data::item_frame::ITEM,
+            item_serializer,
         );
 
         let is_creative_player = caused_by.is_some_and(|s| {
@@ -343,62 +332,47 @@ impl EntityBase for ItemFrameEntity {
         );
         let rotation = self.get_rotation() as i32;
 
-        self.entity.send_meta_data(
-            &[Metadata::new(
-                pumpkin_data::tracked_data::item_frame::ITEM,
-                &item_serializer,
-            )],
-            None,
+        self.entity.set_synced_data(
+            pumpkin_data::tracked_data::item_frame::ITEM,
+            item_serializer,
         );
-        self.entity.send_meta_data(
-            &[Metadata::new(
-                pumpkin_data::tracked_data::item_frame::ROTATION,
-                rotation,
-            )],
-            None,
-        );
+        self.entity
+            .set_synced_data(pumpkin_data::tracked_data::item_frame::ROTATION, rotation);
     }
 
-    fn send_java_spawn_packet<'a>(
-        &'a self,
-        client: &'a crate::net::java::JavaClient,
-    ) -> EntityBaseFuture<'a, ()> {
-        Box::pin(async move {
-            let spawn_packet = self.entity.create_spawn_packet();
-            if let Ok(data) = client.serialize_packet(&spawn_packet) {
-                client.enqueue_packet(data).await;
-            }
+    fn send_java_spawn_packet(&self, client: &crate::net::java::JavaClient) {
+        let spawn_packet = self.entity.create_spawn_packet();
+        if let Ok(data) = client.serialize_packet(&spawn_packet) {
+            client.try_enqueue_packet(data);
+        }
 
-            let ver = client.version.load();
-            if ver >= CURRENT_MC_VERSION {
-                let item_serializer = ItemStackSerializer::from(
-                    self.item_stack
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone(),
-                );
-                let rotation = self.get_rotation() as i32;
+        let ver = client.version.load();
+        if ver >= JavaMinecraftVersion::V_1_21 {
+            let item_serializer = ItemStackSerializer::from(
+                self.item_stack
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+            );
+            let rotation = self.get_rotation() as i32;
 
-                let mut data = Vec::new();
-                let meta_item = Metadata::new(
-                    pumpkin_data::tracked_data::item_frame::ITEM,
-                    item_serializer,
-                );
-                let meta_rot =
-                    Metadata::new(pumpkin_data::tracked_data::item_frame::ROTATION, rotation);
+            let mut data = Vec::new();
+            let meta_item = Metadata::new(
+                pumpkin_data::tracked_data::item_frame::ITEM,
+                item_serializer,
+            );
+            let meta_rot =
+                Metadata::new(pumpkin_data::tracked_data::item_frame::ROTATION, rotation);
 
-                if meta_item.write(&mut data, &ver).is_ok()
-                    && meta_rot.write(&mut data, &ver).is_ok()
-                {
-                    data.push(255);
-                    let meta_packet =
-                        CSetEntityMetadata::new(self.entity.entity_id.into(), data.into());
-                    if let Ok(meta_data) = client.serialize_packet(&meta_packet) {
-                        client.enqueue_packet(meta_data).await;
-                    }
+            if meta_item.write(&mut data, &ver).is_ok() && meta_rot.write(&mut data, &ver).is_ok() {
+                data.push(255);
+                let meta_packet =
+                    CSetEntityMetadata::new(self.entity.entity_id.into(), data.into());
+                if let Ok(meta_data) = client.serialize_packet(&meta_packet) {
+                    client.try_enqueue_packet(meta_data);
                 }
             }
-        })
+        }
     }
 
     fn interact(&self, player: &Arc<Player>, item_stack: &mut ItemStack) -> bool {
