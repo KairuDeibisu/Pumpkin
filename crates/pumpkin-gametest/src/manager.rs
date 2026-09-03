@@ -98,7 +98,7 @@ impl GameTestBatchReport {
         let failed_optional = self.failed_optional.load(Ordering::Acquire);
 
         self.reporter.send_message(
-            TextComponent::translate_cross(
+            pumpkin_macros::translate_cross!(
                 "commands.test.summary",
                 "commands.test.summary",
                 [TextComponent::text(total.to_string())],
@@ -108,7 +108,7 @@ impl GameTestBatchReport {
 
         if failed_required != 0 {
             self.reporter.send_message(
-                TextComponent::translate_cross(
+                pumpkin_macros::translate_cross!(
                     "commands.test.summary.failed",
                     "commands.test.summary.failed",
                     [TextComponent::text(failed_required.to_string())],
@@ -117,7 +117,7 @@ impl GameTestBatchReport {
             );
         } else {
             self.reporter.send_message(
-                TextComponent::translate_cross(
+                pumpkin_macros::translate_cross!(
                     "commands.test.summary.all_required_passed",
                     "commands.test.summary.all_required_passed",
                     [],
@@ -127,7 +127,7 @@ impl GameTestBatchReport {
         }
 
         if failed_optional != 0 {
-            self.reporter.send_message(TextComponent::translate_cross(
+            self.reporter.send_message(pumpkin_macros::translate_cross!(
                 "commands.test.summary.optional_failed",
                 "commands.test.summary.optional_failed",
                 [TextComponent::text(failed_optional.to_string())],
