@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use pumpkin_data::translation::{bedrock, java};
+use pumpkin_data::translation::java;
 use pumpkin_util::text::{TextComponent, color::NamedColor};
 
 use crate::{GameTestError, GameTestSession, GameTestState};
@@ -101,7 +101,7 @@ impl GameTestBatchReport {
         self.reporter.send_message(
             pumpkin_macros::translate_cross!(
                 java::COMMANDS_TEST_SUMMARY,
-                bedrock::COMMANDS_TEST_SUMMARY,
+                java::COMMANDS_TEST_SUMMARY,
                 TextComponent::text(total.to_string()),
             )
             .color_named(NamedColor::White),
@@ -111,7 +111,7 @@ impl GameTestBatchReport {
             self.reporter.send_message(
                 pumpkin_macros::translate_cross!(
                     java::COMMANDS_TEST_SUMMARY_FAILED,
-                    bedrock::COMMANDS_TEST_SUMMARY_FAILED,
+                    java::COMMANDS_TEST_SUMMARY_FAILED,
                     TextComponent::text(failed_required.to_string()),
                 )
                 .color_named(NamedColor::Red),
@@ -120,7 +120,7 @@ impl GameTestBatchReport {
             self.reporter.send_message(
                 pumpkin_macros::translate_cross!(
                     java::COMMANDS_TEST_SUMMARY_ALL_REQUIRED_PASSED,
-                    bedrock::COMMANDS_TEST_SUMMARY_ALL_REQUIRED_PASSED,
+                    java::COMMANDS_TEST_SUMMARY_ALL_REQUIRED_PASSED,
                 )
                 .color_named(NamedColor::Green),
             );
@@ -129,7 +129,7 @@ impl GameTestBatchReport {
         if failed_optional != 0 {
             self.reporter.send_message(pumpkin_macros::translate_cross!(
                 java::COMMANDS_TEST_SUMMARY_OPTIONAL_FAILED,
-                bedrock::COMMANDS_TEST_SUMMARY_OPTIONAL_FAILED,
+                java::COMMANDS_TEST_SUMMARY_OPTIONAL_FAILED,
                 TextComponent::text(failed_optional.to_string()),
             ));
         }

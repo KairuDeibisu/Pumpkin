@@ -119,7 +119,7 @@ impl CommandExecutor for RunExecutor {
         if selected.is_empty() {
             return Err(CommandError::CommandFailed(pumpkin_macros::translate_cross!(
                 java::ARGUMENT_RESOURCE_SELECTOR_NOT_FOUND,
-                bedrock::ARGUMENT_RESOURCE_SELECTOR_NOT_FOUND,
+                java::ARGUMENT_RESOURCE_SELECTOR_NOT_FOUND,
                 TextComponent::text(selector.to_string()),
                 TextComponent::text(TEST_INSTANCE_REGISTRY.to_string()),
             )));
@@ -176,7 +176,7 @@ impl CommandExecutor for RunExecutor {
 
         sender.send_message(pumpkin_macros::translate_cross!(
             java::COMMANDS_TEST_RUN_RUNNING,
-            bedrock::COMMANDS_TEST_RUN_RUNNING,
+            java::COMMANDS_TEST_RUN_RUNNING,
             TextComponent::text(selected.len().to_string()),
         ));
 
