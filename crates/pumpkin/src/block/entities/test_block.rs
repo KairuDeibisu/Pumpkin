@@ -1,3 +1,4 @@
+use pumpkin_data::{Block, BlockStateId};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,6 +37,24 @@ impl TestBlockMode {
             Self::Fail => "fail",
             Self::Accept => "accept",
         }
+    }
+
+    /// Vanilla stores the test-block mode in the block state and mirrors it in the
+    /// block entity. Treat the block state as authoritative so redstone behavior
+    /// cannot diverge from the mode used to discover START/ACCEPT/FAIL/LOG blocks.
+    #[must_use]
+    pub fn from_block_state(state_id: BlockStateId) -> Option<Self> {
+        Block::TEST_BLOCK
+            .properties(state_id)?
+            .to_props()
+            .into_iter()
+            .find_map(|(name, value)| {
+                if name == "mode" {
+                    Self::from_serialized_name(value)
+                } else {
+                    None
+                }
+            })
     }
 }
 
@@ -121,9 +140,14 @@ impl TestBlockBlockEntity {
 
     #[must_use]
     pub fn new(position: BlockPos) -> Self {
+        Self::new_with_mode(position, TestBlockMode::Start)
+    }
+
+    #[must_use]
+    pub fn new_with_mode(position: BlockPos, mode: TestBlockMode) -> Self {
         Self {
             position,
-            mode: Mutex::new("START".to_string()),
+            mode: Mutex::new(mode.serialized_name().to_string()),
             message: Mutex::new(String::new()),
             powered: AtomicBool::new(false),
             triggered: AtomicBool::new(false),
@@ -139,6 +163,11 @@ impl TestBlockBlockEntity {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         TestBlockMode::from_serialized_name(&mode.to_ascii_lowercase())
             .unwrap_or(TestBlockMode::Fail)
+    }
+
+    fn world_mode(&self, world: &World) -> TestBlockMode {
+        TestBlockMode::from_block_state(world.get_block_state_id(&self.position))
+            .unwrap_or_else(|| self.mode())
     }
 
     pub fn message(&self) -> String {
@@ -164,16 +193,16 @@ impl TestBlockBlockEntity {
     }
 
     pub fn trigger(&self, world: &Arc<World>) {
-        let mode = self.mode();
+        let mode = self.world_mode(world);
         if mode == TestBlockMode::Start {
             self.set_powered(true);
             world.update_neighbors(&self.position, None);
-            self.log();
+            self.log(mode);
             return;
         }
 
         if mode == TestBlockMode::Log {
-            self.log();
+            self.log(mode);
         }
 
         self.triggered.store(true, Ordering::Release);
@@ -183,16 +212,15 @@ impl TestBlockBlockEntity {
     pub fn reset(&self, world: &Arc<World>) {
         self.triggered.store(false, Ordering::Release);
         self.dirty.store(true, Ordering::Release);
-        if self.mode() == TestBlockMode::Start {
+        if self.world_mode(world) == TestBlockMode::Start {
             self.set_powered(false);
             world.update_neighbors(&self.position, None);
         }
     }
 
-    fn log(&self) {
+    fn log(&self, mode: TestBlockMode) {
         let message = self.message();
         if !message.trim().is_empty() {
-            let mode = self.mode();
             info!(
                 target: "pumpkin::gametest",
                 mode = mode.serialized_name(),
