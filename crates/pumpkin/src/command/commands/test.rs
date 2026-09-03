@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use futures::executor::block_on;
+use pumpkin_data::translation::{bedrock, java};
 use pumpkin_gametest::{GameTestBatchReport, GameTestReporter, GameTestRetryOptions};
 use pumpkin_protocol::java::client::play::{ArgumentType, CommandSuggestion, SuggestionProviders};
 use pumpkin_util::PermissionLvl;
@@ -117,12 +118,10 @@ impl CommandExecutor for RunExecutor {
             .collect();
         if selected.is_empty() {
             return Err(CommandError::CommandFailed(pumpkin_macros::translate_cross!(
-                "argument.resource_selector.not_found",
-                "argument.resource_selector.not_found",
-                [
-                    TextComponent::text(selector.to_string()),
-                    TextComponent::text(TEST_INSTANCE_REGISTRY.to_string()),
-                ],
+                java::ARGUMENT_RESOURCE_SELECTOR_NOT_FOUND,
+                bedrock::ARGUMENT_RESOURCE_SELECTOR_NOT_FOUND,
+                TextComponent::text(selector.to_string()),
+                TextComponent::text(TEST_INSTANCE_REGISTRY.to_string()),
             )));
         }
 
@@ -176,9 +175,9 @@ impl CommandExecutor for RunExecutor {
         );
 
         sender.send_message(pumpkin_macros::translate_cross!(
-            "commands.test.run.running",
-            "commands.test.run.running",
-            [TextComponent::text(selected.len().to_string())],
+            java::COMMANDS_TEST_RUN_RUNNING,
+            bedrock::COMMANDS_TEST_RUN_RUNNING,
+            TextComponent::text(selected.len().to_string()),
         ));
 
         let report = Arc::new(GameTestBatchReport::new(
