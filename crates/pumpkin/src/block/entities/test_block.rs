@@ -1,5 +1,6 @@
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
+use pumpkin_world::tick::TickPriority;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::info;
@@ -155,6 +156,7 @@ impl TestBlockBlockEntity {
 
     pub fn set_powered(&self, powered: bool) {
         self.powered.store(powered, Ordering::Release);
+        self.dirty.store(true, Ordering::Release);
     }
 
     #[must_use]
@@ -167,6 +169,8 @@ impl TestBlockBlockEntity {
         if mode == TestBlockMode::Start {
             self.set_powered(true);
             world.update_neighbors(&self.position, None);
+            let block = world.get_block(&self.position);
+            world.schedule_block_tick(block, self.position, 1, TickPriority::Normal);
             self.log();
             return;
         }
@@ -176,10 +180,12 @@ impl TestBlockBlockEntity {
         }
 
         self.triggered.store(true, Ordering::Release);
+        self.dirty.store(true, Ordering::Release);
     }
 
     pub fn reset(&self, world: &Arc<World>) {
         self.triggered.store(false, Ordering::Release);
+        self.dirty.store(true, Ordering::Release);
         if self.mode() == TestBlockMode::Start {
             self.set_powered(false);
             world.update_neighbors(&self.position, None);
