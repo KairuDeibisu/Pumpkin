@@ -5,11 +5,34 @@
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
-pub use crate::wit::pumpkin::plugin::gametest::Test;
 use crate::{Component, wit};
+
+/// A running function-based GameTest.
+///
+/// Calling [`succeed`](Self::succeed) marks the current callback as successful.
+/// If the callback returns without succeeding, the test remains running until its
+/// configured timeout is reached.
+#[derive(Clone, Debug)]
+pub struct Test {
+    succeeded: Arc<AtomicBool>,
+}
+
+impl Test {
+    fn new(succeeded: Arc<AtomicBool>) -> Self {
+        Self { succeeded }
+    }
+
+    /// Marks this GameTest invocation as successful.
+    pub fn succeed(&self) {
+        self.succeeded.store(true, Ordering::Release);
+    }
+}
 
 type TestFunction = Arc<dyn Fn(Test) + Send + Sync + 'static>;
 
@@ -58,7 +81,7 @@ where
 }
 
 impl wit::exports::pumpkin::plugin::gametest_handler::Guest for Component {
-    fn handle_test_function(handler_id: u32, test: Test) {
+    fn handle_test_function(handler_id: u32) -> bool {
         let handler = TEST_FUNCTION_HANDLERS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -66,8 +89,12 @@ impl wit::exports::pumpkin::plugin::gametest_handler::Guest for Component {
             .get(&handler_id)
             .cloned();
 
-        if let Some(handler) = handler {
-            handler(test);
-        }
+        let Some(handler) = handler else {
+            return false;
+        };
+
+        let succeeded = Arc::new(AtomicBool::new(false));
+        handler(Test::new(succeeded.clone()));
+        succeeded.load(Ordering::Acquire)
     }
 }
