@@ -32,7 +32,8 @@ impl BlockBehaviour for TestBlock {
     }
 
     fn placed(&self, args: PlacedArgs<'_>) {
-        let entity = TestBlockBlockEntity::new(*args.position);
+        let mode = TestBlockMode::from_block_state(args.state_id).unwrap_or(TestBlockMode::Start);
+        let entity = TestBlockBlockEntity::new_with_mode(*args.position, mode);
         args.world.add_block_entity(Arc::new(entity));
     }
 
@@ -44,9 +45,11 @@ impl BlockBehaviour for TestBlock {
             return;
         };
 
-        // START is output-only. ACCEPT/FAIL/LOG trigger once on a rising edge and
-        // re-arm after the incoming redstone signal falls again.
-        if test_block.mode() == TestBlockMode::Start {
+        // Vanilla TestBlock.neighborChanged treats START as output-only. The mode
+        // comes from the block state; the block entity only carries runtime state.
+        let mode = TestBlockMode::from_block_state(args.world.get_block_state_id(args.position))
+            .unwrap_or_else(|| test_block.mode());
+        if mode == TestBlockMode::Start {
             return;
         }
 
@@ -75,9 +78,12 @@ impl BlockBehaviour for TestBlock {
     }
 
     fn get_weak_redstone_power(&self, args: GetRedstonePowerArgs<'_>) -> u8 {
-        if args.block != &Block::TEST_BLOCK {
+        if args.block != &Block::TEST_BLOCK
+            || TestBlockMode::from_block_state(args.state.id) != Some(TestBlockMode::Start)
+        {
             return 0;
         }
+
         let Some(entity) = args.world.get_block_entity(args.position) else {
             return 0;
         };
@@ -85,11 +91,7 @@ impl BlockBehaviour for TestBlock {
             return 0;
         };
 
-        if test_block.mode() == TestBlockMode::Start && test_block.is_powered() {
-            15
-        } else {
-            0
-        }
+        if test_block.is_powered() { 15 } else { 0 }
     }
 }
 
