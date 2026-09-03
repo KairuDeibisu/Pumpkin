@@ -1,7 +1,10 @@
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tracing::info;
+
+use crate::world::World;
 
 use super::BlockEntity;
 
@@ -41,6 +44,7 @@ pub struct TestBlockBlockEntity {
     pub mode: Mutex<String>,
     pub message: Mutex<String>,
     pub powered: AtomicBool,
+    triggered: AtomicBool,
     pub dirty: AtomicBool,
 }
 
@@ -66,6 +70,7 @@ impl BlockEntity for TestBlockBlockEntity {
             mode: Mutex::new(mode),
             message: Mutex::new(message),
             powered: AtomicBool::new(powered),
+            triggered: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
         }
     }
@@ -121,7 +126,77 @@ impl TestBlockBlockEntity {
             mode: Mutex::new("FAIL".to_string()),
             message: Mutex::new(String::new()),
             powered: AtomicBool::new(false),
+            triggered: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
+        }
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> TestBlockMode {
+        let mode = self
+            .mode
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        TestBlockMode::from_serialized_name(&mode.to_ascii_lowercase())
+            .unwrap_or(TestBlockMode::Fail)
+    }
+
+    pub fn message(&self) -> String {
+        self.message
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    #[must_use]
+    pub fn is_powered(&self) -> bool {
+        self.powered.load(Ordering::Acquire)
+    }
+
+    pub fn set_powered(&self, powered: bool) {
+        self.powered.store(powered, Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn has_triggered(&self) -> bool {
+        self.triggered.load(Ordering::Acquire)
+    }
+
+    pub fn trigger(&self, world: &Arc<World>) {
+        let mode = self.mode();
+        if mode == TestBlockMode::Start {
+            self.set_powered(true);
+            world.update_neighbors(&self.position, None);
+            self.log();
+            return;
+        }
+
+        if mode == TestBlockMode::Log {
+            self.log();
+        }
+
+        self.triggered.store(true, Ordering::Release);
+    }
+
+    pub fn reset(&self, world: &Arc<World>) {
+        self.triggered.store(false, Ordering::Release);
+        if self.mode() == TestBlockMode::Start {
+            self.set_powered(false);
+            world.update_neighbors(&self.position, None);
+        }
+    }
+
+    fn log(&self) {
+        let message = self.message();
+        if !message.trim().is_empty() {
+            let mode = self.mode();
+            info!(
+                target: "pumpkin::gametest",
+                mode = mode.serialized_name(),
+                position = %self.position,
+                message = %message,
+                "Test block"
+            );
         }
     }
 }
