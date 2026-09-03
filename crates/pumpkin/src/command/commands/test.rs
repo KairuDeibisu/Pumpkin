@@ -116,7 +116,7 @@ impl CommandExecutor for RunExecutor {
             .filter(|name| resource_selector_matches(selector, name))
             .collect();
         if selected.is_empty() {
-            return Err(CommandError::CommandFailed(TextComponent::translate_cross(
+            return Err(CommandError::CommandFailed(pumpkin_macros::translate_cross!(
                 "argument.resource_selector.not_found",
                 "argument.resource_selector.not_found",
                 [
@@ -175,7 +175,7 @@ impl CommandExecutor for RunExecutor {
             },
         );
 
-        sender.send_message(TextComponent::translate_cross(
+        sender.send_message(pumpkin_macros::translate_cross!(
             "commands.test.run.running",
             "commands.test.run.running",
             [TextComponent::text(selected.len().to_string())],
