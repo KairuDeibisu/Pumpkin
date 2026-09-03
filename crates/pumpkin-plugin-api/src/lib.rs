@@ -89,6 +89,8 @@ pub mod events;
 mod ext;
 /// Bedrock UI form builders.
 pub mod forms;
+/// Function-based GameTest registration and control.
+pub mod gametest;
 pub(crate) mod generated;
 /// Unified inventory and container management utilities.
 pub mod inventory;
