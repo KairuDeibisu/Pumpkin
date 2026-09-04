@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Component, Path};
 
 use pumpkin_data::registry::RegistryEntryData;
 use pumpkin_gametest::GameTestStructureTemplate;
 use pumpkin_nbt::{Nbt, NbtCompound, nbt_compress::read_gzip_compound_tag, tag::NbtTag};
+use pumpkin_util::identifier::Identifier;
 use serde_json::Value;
 
 pub use pumpkin_gametest::model::{GameTestDefinition as TestInstance, GameTestRotation, TestType};
@@ -96,10 +97,9 @@ impl super::DatapackManager {
     /// used by datapacks, `/test`, and the synced `minecraft:test_instance` registry.
     pub fn register_plugin_test_instance(
         &self,
-        id: &str,
+        id: Identifier,
         instance: TestInstance,
     ) -> Result<(), String> {
-        validate_resource_location(id)?;
         if !instance.is_valid() {
             return Err(format!("Plugin GameTest instance '{id}' is invalid"));
         }
@@ -119,10 +119,21 @@ impl super::DatapackManager {
         &self,
         world_path: &Path,
         plugin_name: &str,
-        id: &str,
+        id: &Identifier,
         bytes: &[u8],
     ) -> Result<(), String> {
-        let (namespace, path) = validate_resource_location(id)?;
+        let (namespace, path) = id.view();
+        let relative_path = Path::new(path);
+        if relative_path.is_absolute()
+            || relative_path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err(format!(
+                "Plugin GameTest structure '{id}' cannot escape its namespace structure directory"
+            ));
+        }
+
         let compound = read_gzip_compound_tag(Cursor::new(bytes))
             .map_err(|error| format!("Failed to parse plugin GameTest structure '{id}': {error}"))?;
         GameTestStructureTemplate::from_nbt(&compound)
@@ -184,28 +195,6 @@ impl super::DatapackManager {
 
         Ok(())
     }
-}
-
-fn validate_resource_location(value: &str) -> Result<(&str, &str), String> {
-    let Some((namespace, path)) = value.split_once(':') else {
-        return Err(format!("'{value}' is not a namespaced resource location"));
-    };
-    let valid_namespace = !namespace.is_empty()
-        && namespace
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_.-".contains(&byte));
-    let valid_path = !path.is_empty()
-        && !path.contains(':')
-        && !path.split('/').any(|segment| segment == "." || segment == "..")
-        && path.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || b"_./-".contains(&byte)
-        });
-    if !valid_namespace || !valid_path {
-        return Err(format!("Invalid resource location '{value}'"));
-    }
-    Ok((namespace, path))
 }
 
 /// Encodes the datapack test definition using the same map shape consumed by
