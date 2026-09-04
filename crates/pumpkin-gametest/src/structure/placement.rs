@@ -217,6 +217,57 @@ pub async fn place_structure_with_controller_rotation(
         }
     }
 
+    // Java structure templates store entities separately from blocks. Preserve their
+    // precise floating-point position and yaw while applying the same structure
+    // rotation used by Pumpkin's normal template placement.
+    for entity in template.entities() {
+        let relative_pos = match rotation {
+            GameTestRotation::None => entity.pos,
+            GameTestRotation::Clockwise90 => Vector3::new(
+                f64::from(source_size[2]) - entity.pos.z,
+                entity.pos.y,
+                entity.pos.x,
+            ),
+            GameTestRotation::Clockwise180 => Vector3::new(
+                f64::from(source_size[0]) - entity.pos.x,
+                entity.pos.y,
+                f64::from(source_size[2]) - entity.pos.z,
+            ),
+            GameTestRotation::Counterclockwise90 => Vector3::new(
+                entity.pos.z,
+                entity.pos.y,
+                f64::from(source_size[0]) - entity.pos.x,
+            ),
+        };
+        let world_pos = Vector3::new(
+            f64::from(origin.0.x) + relative_pos.x,
+            f64::from(origin.0.y) + relative_pos.y,
+            f64::from(origin.0.z) + relative_pos.z,
+        );
+        let mut nbt = entity.nbt.clone();
+        nbt.put(
+            "Pos",
+            NbtTag::List(vec![world_pos.x.into(), world_pos.y.into(), world_pos.z.into()]),
+        );
+        nbt.child_tags.remove("UUID");
+
+        if let Some(rotation_nbt) = nbt.get_list("Rotation")
+            && rotation_nbt.len() == 2
+        {
+            let yaw = rotation_nbt[0].extract_float().unwrap_or_default()
+                + match rotation {
+                    GameTestRotation::None => 0.0,
+                    GameTestRotation::Clockwise90 => 90.0,
+                    GameTestRotation::Clockwise180 => 180.0,
+                    GameTestRotation::Counterclockwise90 => 270.0,
+                };
+            let pitch = rotation_nbt[1].extract_float().unwrap_or_default();
+            nbt.put("Rotation", NbtTag::List(vec![yaw.into(), pitch.into()]));
+        }
+
+        world.spawn_structure_entity(world_pos, &nbt).await?;
+    }
+
     // GameTestInfo::placeStructure clears both scheduled block ticks and queued
     // block events in the test box after replacement. This prevents deferred work
     // from attempt N from executing against attempt N+1.
