@@ -1,5 +1,6 @@
 use pumpkin_data::{Block, BlockStateId};
 use pumpkin_nbt::NbtCompound;
+use pumpkin_world::generation::structure::template::{StructureEntityInfo, StructureTemplate};
 
 use crate::error::{GameTestError, GameTestResult};
 
@@ -46,6 +47,7 @@ pub struct GameTestStructureBlock {
 pub struct GameTestStructureTemplate {
     size: [i32; 3],
     blocks: Vec<GameTestStructureBlock>,
+    entities: Vec<StructureEntityInfo>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -110,9 +112,17 @@ impl GameTestStructureTemplate {
             });
         }
 
+        // Reuse Pumpkin's vanilla structure parser for entity records so Java Edition
+        // `entities`, `pos`, `blockPos`, and entity NBT keep exactly the same shape as
+        // normal structure-template placement.
+        let entities = StructureTemplate::from_nbt_compound(structure)
+            .map_err(|error| invalid_structure(format!("Invalid structure entities: {error}")))?
+            .entity_info_list;
+
         Ok(Self {
             size,
             blocks: parsed_blocks,
+            entities,
         })
     }
 
@@ -124,6 +134,11 @@ impl GameTestStructureTemplate {
     #[must_use]
     pub fn blocks(&self) -> &[GameTestStructureBlock] {
         &self.blocks
+    }
+
+    #[must_use]
+    pub fn entities(&self) -> &[StructureEntityInfo] {
+        &self.entities
     }
 
     #[must_use]
