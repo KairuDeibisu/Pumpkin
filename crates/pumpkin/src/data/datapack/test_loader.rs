@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::Cursor;
 use std::path::Path;
 
 use pumpkin_data::registry::RegistryEntryData;
-use pumpkin_nbt::{Nbt, NbtCompound, tag::NbtTag};
+use pumpkin_gametest::GameTestStructureTemplate;
+use pumpkin_nbt::{Nbt, NbtCompound, nbt_compress::read_gzip_compound_tag, tag::NbtTag};
 use serde_json::Value;
 
 pub use pumpkin_gametest::model::{GameTestDefinition as TestInstance, GameTestRotation, TestType};
@@ -87,6 +89,123 @@ fn load_test_instances_recursive(
             }
         }
     }
+}
+
+impl super::DatapackManager {
+    /// Registers or replaces a plugin-defined GameTest instance in the same registry
+    /// used by datapacks, `/test`, and the synced `minecraft:test_instance` registry.
+    pub fn register_plugin_test_instance(
+        &self,
+        id: &str,
+        instance: TestInstance,
+    ) -> Result<(), String> {
+        validate_resource_location(id)?;
+        if !instance.is_valid() {
+            return Err(format!("Plugin GameTest instance '{id}' is invalid"));
+        }
+
+        self.test_instances
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.to_string(), instance);
+        Ok(())
+    }
+
+    /// Registers gzipped Java structure NBT as a small synthetic runtime datapack.
+    ///
+    /// Using a datapack root keeps plugin structures on Pumpkin's normal structure
+    /// resolution path, including namespace/path handling and test-run loading.
+    pub fn register_plugin_test_structure(
+        &self,
+        world_path: &Path,
+        plugin_name: &str,
+        id: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let (namespace, path) = validate_resource_location(id)?;
+        let compound = read_gzip_compound_tag(Cursor::new(bytes))
+            .map_err(|error| format!("Failed to parse plugin GameTest structure '{id}': {error}"))?;
+        GameTestStructureTemplate::from_nbt(&compound)
+            .map_err(|error| format!("Invalid plugin GameTest structure '{id}': {error}"))?;
+
+        let safe_plugin_name: String = plugin_name
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let pack_id = format!("plugin-gametest/{safe_plugin_name}");
+        let root_path = world_path
+            .join(".pumpkin")
+            .join("plugin-gametest")
+            .join(&safe_plugin_name);
+        let structure_path = root_path
+            .join("data")
+            .join(namespace)
+            .join("structure")
+            .join(format!("{path}.nbt"));
+        let parent = structure_path.parent().ok_or_else(|| {
+            format!("Unable to resolve plugin GameTest structure path for '{id}'")
+        })?;
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to create plugin GameTest structure directory '{}': {error}",
+                parent.display()
+            )
+        })?;
+        fs::write(&structure_path, bytes).map_err(|error| {
+            format!(
+                "Failed to write plugin GameTest structure '{}': {error}",
+                structure_path.display()
+            )
+        })?;
+
+        let mut packs = self
+            .loaded_packs
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pack) = packs.iter_mut().find(|pack| pack.id == pack_id) {
+            pack.root_path = root_path;
+        } else {
+            packs.push(super::LoadedDatapack {
+                id: pack_id,
+                name: format!("GameTests: {plugin_name}"),
+                description: format!("Runtime GameTest structures from plugin {plugin_name}"),
+                pack_format: 0,
+                root_path,
+                recipe_count: 0,
+                function_count: 0,
+            });
+        }
+
+        Ok(())
+    }
+}
+
+fn validate_resource_location(value: &str) -> Result<(&str, &str), String> {
+    let Some((namespace, path)) = value.split_once(':') else {
+        return Err(format!("'{value}' is not a namespaced resource location"));
+    };
+    let valid_namespace = !namespace.is_empty()
+        && namespace
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_.-".contains(&byte));
+    let valid_path = !path.is_empty()
+        && !path.contains(':')
+        && !path.split('/').any(|segment| segment == "." || segment == "..")
+        && path.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || b"_./-".contains(&byte)
+        });
+    if !valid_namespace || !valid_path {
+        return Err(format!("Invalid resource location '{value}'"));
+    }
+    Ok((namespace, path))
 }
 
 /// Encodes the datapack test definition using the same map shape consumed by
