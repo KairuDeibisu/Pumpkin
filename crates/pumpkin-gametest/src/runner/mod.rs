@@ -9,7 +9,7 @@ use pumpkin_util::math::position::BlockPos;
 
 use crate::block_based::BlockBasedTest;
 use crate::error::{GameTestError, GameTestResult};
-use crate::function::run_function;
+use crate::function::{GameTestFunctionContext, run_function};
 use crate::model::{GameTestRotation, TestType};
 use crate::structure::{
     GameTestPosition, GameTestStructureTemplate, TestBlockMode, TestStructureInstance,
@@ -297,12 +297,12 @@ impl GameTestSession {
                 Ok(RunningEvaluation::Continue)
             }
             TestType::Function => {
-                let function = self.test.definition().function.clone().ok_or_else(|| {
-                    GameTestError::World(format!(
+                if self.test.definition().function.is_none() {
+                    return Err(GameTestError::World(format!(
                         "Function GameTest '{}' is missing its function id",
                         self.test.id()
-                    ))
-                })?;
+                    )));
+                }
 
                 if let Some(placement) = &self.placement {
                     self.world
@@ -310,18 +310,27 @@ impl GameTestSession {
                         .await?;
                 }
 
-                if run_function(&function).await? {
-                    Ok(RunningEvaluation::Passed)
-                } else {
-                    Ok(RunningEvaluation::Continue)
-                }
+                // Function tests are evaluated by evaluate_running below so tick zero
+                // is invoked exactly once, then once per subsequent GameTest tick.
+                Ok(RunningEvaluation::Continue)
             }
         }
     }
 
     async fn evaluate_running(&self, tick: u32) -> GameTestResult<RunningEvaluation> {
         if self.test.definition().instance_type == TestType::Function {
-            return Ok(RunningEvaluation::Continue);
+            let function = self.test.definition().function.as_deref().ok_or_else(|| {
+                GameTestError::World(format!(
+                    "Function GameTest '{}' is missing its function id",
+                    self.test.id()
+                ))
+            })?;
+            let context = self.function_context(tick)?;
+            return if run_function(function, &context).await? {
+                Ok(RunningEvaluation::Passed)
+            } else {
+                Ok(RunningEvaluation::Continue)
+            };
         }
 
         let accept_blocks = self.test_block_positions(TestBlockMode::Accept);
@@ -359,6 +368,26 @@ impl GameTestSession {
         }
 
         Ok(RunningEvaluation::Continue)
+    }
+
+    fn function_context(&self, tick: u32) -> GameTestResult<GameTestFunctionContext> {
+        let placement = self.placement.as_ref().ok_or_else(|| {
+            GameTestError::World("Function GameTest has no placed structure".to_string())
+        })?;
+        let origin = placement.origin();
+        let size = placement.size();
+        let max = BlockPos::new(
+            origin.0.x + size[0],
+            origin.0.y + size[1],
+            origin.0.z + size[2],
+        );
+
+        Ok(GameTestFunctionContext::new(
+            tick,
+            self.world.clone(),
+            *origin,
+            max,
+        ))
     }
 
     async fn handle_attempt_pass(&mut self, tick: u32) {
