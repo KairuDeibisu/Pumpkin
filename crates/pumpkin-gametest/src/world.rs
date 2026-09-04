@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use pumpkin_data::BlockStateId;
 use pumpkin_nbt::NbtCompound;
-use pumpkin_util::math::position::BlockPos;
+use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
 use pumpkin_world::world::BlockFlags;
 
 use crate::error::GameTestResult;
@@ -29,6 +29,28 @@ pub trait GameTestWorld: Send + Sync {
         position: &BlockPos,
         nbt: &NbtCompound,
     ) -> GameTestResult<()>;
+
+    /// Spawns one entity embedded in a Java Edition structure template.
+    async fn spawn_structure_entity(
+        &self,
+        position: Vector3<f64>,
+        nbt: &NbtCompound,
+    ) -> GameTestResult<()>;
+
+    /// Returns ids for matching non-player entities intersecting `[min, max)`.
+    async fn get_entities_in_area(
+        &self,
+        min: &BlockPos,
+        max: &BlockPos,
+        entity_type: &str,
+    ) -> GameTestResult<Vec<i32>>;
+
+    /// Returns whether `entity_id` currently has a passenger of `passenger_type`.
+    async fn entity_has_passenger(
+        &self,
+        entity_id: i32,
+        passenger_type: &str,
+    ) -> GameTestResult<bool>;
 
     /// Removes all non-player entities intersecting the half-open world-space box
     /// `[min, max)`. Vanilla does this before every `GameTest` structure placement,
