@@ -62,7 +62,6 @@ impl Test {
     /// An empty result is treated as a failed assertion, which makes this convenient
     /// to use with `?` inside [`succeed_when`](Self::succeed_when).
     pub fn get_entity_present_in_area(&self, entity_type: &str) -> Result<Vec<Entity>, String> {
-        validate_resource_location(entity_type, "entity type")?;
         let entities = wit::pumpkin::plugin::gametest::get_entities_in_area(entity_type)?;
         if entities.is_empty() {
             return Err(format!(
@@ -82,7 +81,6 @@ impl Test {
         entity: &Entity,
         passenger_type: &str,
     ) -> Result<(), String> {
-        validate_resource_location(passenger_type, "passenger entity type")?;
         wit::pumpkin::plugin::gametest::assert_entity_has_passenger(entity.id, passenger_type)
     }
 }
@@ -140,7 +138,6 @@ impl TestBuilder {
 
     /// Registers the callback and test instance with Pumpkin.
     pub fn register(self) -> Result<(), String> {
-        validate_resource_location(&self.structure_name, "GameTest structure")?;
         if self.max_ticks == 0 {
             return Err("GameTest max_ticks must be greater than zero".to_string());
         }
@@ -171,12 +168,12 @@ impl TestBuilder {
 }
 
 /// Starts registration of a function-based GameTest instance.
+///
+/// Resource-location validation is performed by the Pumpkin host when the builder is registered.
 pub fn register<F>(namespace: &str, name: &str, handler: F) -> Result<TestBuilder, String>
 where
     F: Fn(Test) + Send + Sync + 'static,
 {
-    validate_namespace(namespace)?;
-    validate_path(name, "GameTest name")?;
     let id = format!("{namespace}:{name}");
 
     Ok(TestBuilder {
@@ -191,7 +188,6 @@ where
 
 /// Registers gzipped Java Edition structure NBT for use by plugin GameTests.
 pub fn register_structure(id: &str, nbt: &[u8]) -> Result<(), String> {
-    validate_resource_location(id, "GameTest structure")?;
     if nbt.is_empty() {
         return Err("GameTest structure NBT cannot be empty".to_string());
     }
@@ -206,7 +202,6 @@ pub fn register_test_function<F>(id: &str, handler: F) -> Result<(), String>
 where
     F: Fn(Test) + Send + Sync + 'static,
 {
-    validate_resource_location(id, "GameTest function")?;
     let handler_id = insert_handler(Arc::new(handler));
 
     if let Err(error) = wit::pumpkin::plugin::gametest::register_test_function(id, handler_id) {
@@ -252,38 +247,4 @@ impl wit::exports::pumpkin::plugin::gametest_handler::Guest for Component {
         handler(Test::new(succeeded.clone(), tick));
         succeeded.load(Ordering::Acquire)
     }
-}
-
-fn validate_resource_location(value: &str, label: &str) -> Result<(), String> {
-    let Some((namespace, path)) = value.split_once(':') else {
-        return Err(format!("{label} must be a namespaced resource location"));
-    };
-    validate_namespace(namespace)?;
-    validate_path(path, label)
-}
-
-fn validate_namespace(namespace: &str) -> Result<(), String> {
-    if namespace.is_empty()
-        || !namespace
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_.-".contains(&byte))
-    {
-        return Err(format!("Invalid GameTest namespace '{namespace}'"));
-    }
-    Ok(())
-}
-
-fn validate_path(path: &str, label: &str) -> Result<(), String> {
-    if path.is_empty()
-        || path.contains(':')
-        || path.split('/').any(|segment| segment == "." || segment == "..")
-        || !path.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || b"_./-".contains(&byte)
-        })
-    {
-        return Err(format!("Invalid {label} path '{path}'"));
-    }
-    Ok(())
 }
