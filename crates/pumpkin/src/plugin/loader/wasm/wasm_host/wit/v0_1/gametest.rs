@@ -8,6 +8,7 @@ use pumpkin_gametest::{
     GameTestDefinition, GameTestError, GameTestFunction, GameTestResult, GameTestRotation, TestType,
     function::GameTestFunctionContext, register_function,
 };
+use pumpkin_util::identifier::Identifier;
 use serde_json::Value;
 
 use crate::plugin::loader::wasm::wasm_host::{
@@ -61,9 +62,10 @@ impl gametest::Host for PluginHostState {
         id: String,
         handler: u32,
     ) -> wasmtime::Result<Result<(), String>> {
-        if let Err(error) = validate_resource_location(&id) {
-            return Ok(Err(error));
-        }
+        let id = match parse_identifier(&id) {
+            Ok(id) => id,
+            Err(error) => return Ok(Err(error)),
+        };
 
         let plugin = self
             .plugin
@@ -76,7 +78,7 @@ impl gametest::Host for PluginHostState {
             .ok_or_else(|| wasmtime::Error::msg("Plugin name not initialized"))?;
 
         register_function(
-            id,
+            id.to_string(),
             Arc::new(WasmGameTestFunction {
                 plugin,
                 plugin_name,
@@ -92,9 +94,10 @@ impl gametest::Host for PluginHostState {
         id: String,
         nbt: Vec<u8>,
     ) -> wasmtime::Result<Result<(), String>> {
-        if let Err(error) = validate_resource_location(&id) {
-            return Ok(Err(error));
-        }
+        let id = match parse_identifier(&id) {
+            Ok(id) => id,
+            Err(error) => return Ok(Err(error)),
+        };
         if nbt.is_empty() {
             return Ok(Err("GameTest structure NBT cannot be empty".to_string()));
         }
@@ -122,15 +125,18 @@ impl gametest::Host for PluginHostState {
         id: String,
         test: gametest::GameTest,
     ) -> wasmtime::Result<Result<(), String>> {
-        if let Err(error) = validate_resource_location(&id) {
-            return Ok(Err(error));
-        }
-        if let Err(error) = validate_resource_location(&test.function_id) {
-            return Ok(Err(format!("Invalid GameTest function id: {error}")));
-        }
-        if let Err(error) = validate_resource_location(&test.structure_name) {
-            return Ok(Err(format!("Invalid GameTest structure id: {error}")));
-        }
+        let id = match parse_identifier(&id) {
+            Ok(id) => id,
+            Err(error) => return Ok(Err(error)),
+        };
+        let function_id = match parse_identifier(&test.function_id) {
+            Ok(id) => id,
+            Err(error) => return Ok(Err(format!("Invalid GameTest function id: {error}"))),
+        };
+        let structure_name = match parse_identifier(&test.structure_name) {
+            Ok(id) => id,
+            Err(error) => return Ok(Err(format!("Invalid GameTest structure id: {error}"))),
+        };
         if test.max_ticks == 0 {
             return Ok(Err("GameTest max_ticks must be greater than zero".to_string()));
         }
@@ -151,8 +157,8 @@ impl gametest::Host for PluginHostState {
         let definition = GameTestDefinition {
             instance_type: TestType::Function,
             environment: Value::String("minecraft:default".to_string()),
-            structure: test.structure_name,
-            function: Some(test.function_id),
+            structure: structure_name.to_string(),
+            function: Some(function_id.to_string()),
             max_ticks,
             setup_ticks,
             required: test.required,
@@ -166,16 +172,17 @@ impl gametest::Host for PluginHostState {
 
         Ok(server
             .datapack_manager
-            .register_plugin_test_instance(&id, definition))
+            .register_plugin_test_instance(id, definition))
     }
 
     async fn get_entities_in_area(
         &mut self,
         entity_type: String,
     ) -> wasmtime::Result<Result<Vec<gametest::TestEntity>, String>> {
-        if let Err(error) = validate_resource_location(&entity_type) {
-            return Ok(Err(error));
-        }
+        let entity_type = match parse_identifier(&entity_type) {
+            Ok(id) => id.to_string(),
+            Err(error) => return Ok(Err(error)),
+        };
         let context = match active_context(self) {
             Ok(context) => context,
             Err(error) => return Ok(Err(error)),
@@ -195,9 +202,10 @@ impl gametest::Host for PluginHostState {
         entity_id: i32,
         passenger_type: String,
     ) -> wasmtime::Result<Result<(), String>> {
-        if let Err(error) = validate_resource_location(&passenger_type) {
-            return Ok(Err(error));
-        }
+        let passenger_type = match parse_identifier(&passenger_type) {
+            Ok(id) => id.to_string(),
+            Err(error) => return Ok(Err(error)),
+        };
         let context = match active_context(self) {
             Ok(context) => context,
             Err(error) => return Ok(Err(error)),
@@ -223,24 +231,6 @@ fn active_context(state: &PluginHostState) -> Result<GameTestFunctionContext, St
         .ok_or_else(|| "GameTest assertion called outside an active test callback".to_string())
 }
 
-fn validate_resource_location(value: &str) -> Result<(), String> {
-    let Some((namespace, path)) = value.split_once(':') else {
-        return Err(format!("'{value}' is not a namespaced resource location"));
-    };
-    let valid_namespace = !namespace.is_empty()
-        && namespace
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_.-".contains(&byte));
-    let valid_path = !path.is_empty()
-        && !path.contains(':')
-        && !path.split('/').any(|segment| segment == "." || segment == "..")
-        && path.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || b"_./-".contains(&byte)
-        });
-    if !valid_namespace || !valid_path {
-        return Err(format!("Invalid resource location '{value}'"));
-    }
-    Ok(())
+fn parse_identifier(value: &str) -> Result<Identifier, String> {
+    Identifier::parse(value).map_err(|error| error.to_string())
 }
