@@ -67,6 +67,6 @@ pub enum LoaderError {
         server_version: u32,
     },
 
-    #[error("Wasm plugin initialization error: {0}")]
+    #[error("Wasm plugin initialization error: {0:?}")]
     WasmInitializationError(#[from] PluginInitError),
 }
