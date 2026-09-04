@@ -3,14 +3,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 
 use async_trait::async_trait;
-use pumpkin_data::{BlockState, BlockStateId};
+use pumpkin_data::{BlockState, BlockStateId, entity::EntityType};
 use pumpkin_gametest::{
     BlockBasedTest, GameTestError, GameTestManager, GameTestReporter, GameTestResult,
     GameTestRotation, GameTestRunner, GameTestSession, GameTestStructureTemplate, GameTestWorld,
 };
 pub use pumpkin_gametest::{GameTestBatchReport, GameTestRetryOptions};
 use pumpkin_nbt::NbtCompound;
-use pumpkin_util::math::{position::BlockPos, vector2::Vector2};
+use pumpkin_util::math::{position::BlockPos, vector2::Vector2, vector3::Vector3};
 use pumpkin_util::text::TextComponent;
 use pumpkin_world::{chunk::ChunkHeightmapType, world::BlockFlags};
 use tokio::sync::Mutex;
@@ -21,6 +21,7 @@ use crate::{
         BlockEntity, block_entity_from_nbt, test_block::TestBlockBlockEntity,
         test_instance_block::TestInstanceBlockBlockEntity,
     },
+    entity::r#type::from_type,
     server::Server,
     world::World,
 };
@@ -398,6 +399,74 @@ impl GameTestWorld for ServerGameTestWorld {
         Ok(())
     }
 
+    async fn spawn_structure_entity(
+        &self,
+        position: Vector3<f64>,
+        nbt: &NbtCompound,
+    ) -> GameTestResult<()> {
+        let id = nbt.get_string("id").ok_or_else(|| {
+            GameTestError::World("Structure entity is missing its 'id'".to_string())
+        })?;
+        let entity_type = EntityType::from_name(id.strip_prefix("minecraft:").unwrap_or(id))
+            .ok_or_else(|| GameTestError::World(format!("Unknown structure entity '{id}'")))?;
+        let entity = from_type(entity_type, position, &self.world, uuid::Uuid::new_v4());
+        entity.read_nbt_non_mut(nbt);
+        self.world.spawn_entity(entity);
+        Ok(())
+    }
+
+    async fn get_entities_in_area(
+        &self,
+        min: &BlockPos,
+        max: &BlockPos,
+        entity_type: &str,
+    ) -> GameTestResult<Vec<i32>> {
+        let min_x = f64::from(min.0.x);
+        let min_y = f64::from(min.0.y);
+        let min_z = f64::from(min.0.z);
+        let max_x = f64::from(max.0.x);
+        let max_y = f64::from(max.0.y);
+        let max_z = f64::from(max.0.z);
+        let entities = self.world.entities.load_full();
+
+        Ok(entities
+            .iter()
+            .filter(|entity| {
+                let base = entity.get_entity();
+                let bounds = base.bounding_box.load();
+                bounds.max.x > min_x
+                    && bounds.min.x < max_x
+                    && bounds.max.y > min_y
+                    && bounds.min.y < max_y
+                    && bounds.max.z > min_z
+                    && bounds.min.z < max_z
+                    && entity_type_matches(base.entity_type.resource_name, entity_type)
+            })
+            .map(|entity| entity.get_entity().entity_id)
+            .collect())
+    }
+
+    async fn entity_has_passenger(
+        &self,
+        entity_id: i32,
+        passenger_type: &str,
+    ) -> GameTestResult<bool> {
+        let entity = self.world.get_entity_by_id(entity_id).ok_or_else(|| {
+            GameTestError::World(format!("GameTest entity {entity_id} is no longer present"))
+        })?;
+        let passengers = entity
+            .get_entity()
+            .passengers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(passengers.iter().any(|passenger| {
+            entity_type_matches(
+                passenger.get_entity().entity_type.resource_name,
+                passenger_type,
+            )
+        }))
+    }
+
     async fn clear_non_player_entities(
         &self,
         min: &BlockPos,
@@ -529,4 +598,9 @@ impl GameTestWorld for ServerGameTestWorld {
             .get_heightmap_height_async(ChunkHeightmapType::WorldSurface, x, z)
             .await
     }
+}
+
+fn entity_type_matches(actual: &str, requested: &str) -> bool {
+    actual.strip_prefix("minecraft:").unwrap_or(actual)
+        == requested.strip_prefix("minecraft:").unwrap_or(requested)
 }
