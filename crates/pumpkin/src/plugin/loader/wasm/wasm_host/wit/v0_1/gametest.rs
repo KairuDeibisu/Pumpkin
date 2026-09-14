@@ -2,12 +2,16 @@ use std::sync::Arc;
 
 use pumpkin_data::entity::EntityType;
 use pumpkin_gametest::SimulatedPlayerController;
-use pumpkin_util::math::vector3::Vector3;
+use pumpkin_protocol::java::client::play::{
+    CPlayerInfoUpdate, CSetEntityMetadata, Player as JavaPlayer, PlayerAction, PlayerInfoFlags,
+};
+use pumpkin_util::{math::vector3::Vector3, version::JavaMinecraftVersion};
 use uuid::Uuid;
 use wasmtime::component::{Access, HasSelf, Resource};
 
 use crate::{
     entity::{Entity, EntityBase, living::LivingEntity},
+    net::{ClientPlatform, java::JavaClient},
     plugin::loader::wasm::wasm_host::{
         state::{PluginHostState, WorldResource},
         wit::v0_1::pumpkin::plugin::{
@@ -59,6 +63,60 @@ impl EntityBase for GameTestSimulatedPlayer {
         }
 
         self.living_entity.tick(caller, server);
+    }
+
+    fn send_java_spawn_packet(&self, client: &JavaClient) {
+        let entity = &self.living_entity.entity;
+        let name = format!("GameTest{}", entity.entity_id);
+        let actions = [
+            PlayerAction::AddPlayer {
+                name: &name,
+                properties: &[],
+            },
+            PlayerAction::UpdateListed(false),
+        ];
+        let players = [JavaPlayer {
+            uuid: entity.entity_uuid,
+            actions: &actions,
+        }];
+        let player_info = CPlayerInfoUpdate::new(
+            (PlayerInfoFlags::ADD_PLAYER | PlayerInfoFlags::UPDATE_LISTED).bits(),
+            &players,
+        );
+        if let Ok(data) = client.serialize_packet(&player_info) {
+            client.try_enqueue_packet(data);
+        }
+
+        let version = client.version.load();
+        let is_mob = entity.entity_type.mob || self.get_mob().is_some();
+        let metadata = self.java_spawn_metadata(version);
+        if version < JavaMinecraftVersion::V_1_19 && is_mob {
+            let spawn_packet = entity.create_spawn_living_packet(metadata.clone());
+            if let Ok(data) = client.serialize_packet(&spawn_packet) {
+                client.try_enqueue_packet(data);
+            }
+            if version >= JavaMinecraftVersion::V_1_15
+                && let Some(meta) = metadata
+            {
+                let meta_packet = CSetEntityMetadata::new(entity.entity_id.into(), meta);
+                if let Ok(meta_data) = client.serialize_packet(&meta_packet) {
+                    client.try_enqueue_packet(meta_data);
+                }
+            }
+        } else {
+            let spawn_packet = entity.create_spawn_packet();
+            if let Ok(data) = client.serialize_packet(&spawn_packet) {
+                client.try_enqueue_packet(data);
+            }
+            if let Some(meta) = metadata
+                && (version >= JavaMinecraftVersion::V_1_9 || meta.last().copied() == Some(127))
+            {
+                let meta_packet = CSetEntityMetadata::new(entity.entity_id.into(), meta);
+                if let Ok(meta_data) = client.serialize_packet(&meta_packet) {
+                    client.try_enqueue_packet(meta_data);
+                }
+            }
+        }
     }
 
     fn get_entity(&self) -> &Entity {
