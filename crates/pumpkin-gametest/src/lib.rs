@@ -4,6 +4,7 @@ pub mod helper;
 pub mod manager;
 pub mod model;
 pub mod runner;
+pub mod simulated_player;
 pub mod structure;
 pub mod world;
 
@@ -15,6 +16,7 @@ pub use manager::{
 };
 pub use model::{GameTestDefinition, GameTestRotation, TestType};
 pub use runner::{GameTestSession, GameTestState, TestRunner};
+pub use simulated_player::SimulatedPlayerController;
 pub use structure::{
     GameTestStructureBlock, GameTestStructureTemplate, TestBlockMode, TestStructureInstance,
     clear_structure_area, encase_structure, place_structure,

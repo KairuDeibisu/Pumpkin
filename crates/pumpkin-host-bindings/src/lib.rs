@@ -9,6 +9,7 @@ bindgen!({
         "pumpkin:plugin/datapack@0.1.0.[method]datapack-manager.enable-pack": async | store | trappable,
         "pumpkin:plugin/datapack@0.1.0.[method]datapack-manager.execute-function": async | store | trappable,
         "pumpkin:plugin/datapack@0.1.0.[method]datapack-manager.reload": async | store | trappable,
+        "pumpkin:plugin/gametest@0.1.0.create-simulated-player": async | store | trappable,
         "pumpkin:plugin/ipc@0.1.0.send-ipc-message": async | store | trappable,
         "pumpkin:plugin/player@0.1.0.[method]player.add-effect": async | store | trappable,
         "pumpkin:plugin/player@0.1.0.[method]player.add-experience-levels": async | store | trappable,

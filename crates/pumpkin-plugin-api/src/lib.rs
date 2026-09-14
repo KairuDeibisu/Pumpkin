@@ -127,10 +127,10 @@ pub use wit::pumpkin::plugin::{
     entity_statuses as entity_statuses_wit,
     entity_types::EntityType,
     event::{self as events_wit, EventType},
-    game_events as game_events_wit, gui, i18n, inventory as inventory_wit, ipc, item_stack,
-    java_dialogs, java_packets, particles, permission, player, potions as potions_wit,
-    recipe as recipe_wit, scoreboard, screens as screens_wit, server, statistics as statistics_wit,
-    text, uuid, world,
+    game_events as game_events_wit, gametest, gui, i18n, inventory as inventory_wit, ipc,
+    item_stack, java_dialogs, java_packets, particles, permission, player,
+    potions as potions_wit, recipe as recipe_wit, scoreboard, screens as screens_wit, server,
+    statistics as statistics_wit, text, uuid, world,
 };
 
 // Convenience re-exports of commonly-used plugin types so plugin authors can
