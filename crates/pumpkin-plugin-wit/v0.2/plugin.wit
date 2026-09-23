@@ -11,6 +11,7 @@ world plugin {
     use command.{command-sender, consumed-args, command-error, command-suggestions, suggestion-request};
     use %world.{entity, chunk-buffer, generation-phase};
     use ipc.{plugin-id, ipc-message};
+    use gametest.{test as gametest-test};
 
     // --- Host-provided imports ---
 
@@ -78,6 +79,8 @@ world plugin {
     import potions;
     /// Provides entity status / animation event types.
     import entity-statuses;
+    /// Provides plugin-owned GameTest registration and simulated players.
+    import gametest;
 
     // --- Plugin-provided exports ---
 
@@ -111,6 +114,9 @@ world plugin {
 
     /// Dispatches a scheduled task execution to the plugin.
     export handle-task: async func(handler-id: u32, server: server-instance);
+
+    /// Dispatches a registered GameTest to the plugin.
+    export handle-gametest: async func(handler-id: u32, test: gametest-test) -> result<_, string>;
 
     /// Processes an incoming message from another plugin if possible, and returns (a possibly empty) response.
     export handle-ipc-message: async func(sender: plugin-id, message: ipc-message) -> result<ipc-message, string>;

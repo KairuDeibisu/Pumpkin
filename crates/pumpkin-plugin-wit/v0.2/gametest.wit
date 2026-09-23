@@ -1,0 +1,39 @@
+interface gametest {
+    use common.{position, game-mode};
+
+    /// Result of a command executed by a simulated player.
+    record command-result {
+        success-count: s32,
+    }
+
+    /// Registers a plugin-owned GameTest callback.
+    register-test: async func(
+        test-class-name: string,
+        test-name: string,
+        handler-id: u32,
+    ) -> result<_, string>;
+
+    /// Context for one running plugin GameTest.
+    resource test {
+        /// Spawns a non-networked simulated player in this test's world.
+        spawn-simulated-player: async func(
+            location: position,
+            name: option<string>,
+            game-mode: option<game-mode>,
+        ) -> simulated-player;
+    }
+
+    /// Minimal simulated-player surface. More Bedrock GameTest behavior can be
+    /// layered onto this resource without changing callback registration.
+    resource simulated-player {
+        /// Executes a command through Pumpkin's command dispatcher with this
+        /// simulated player as the command source, so @s resolves to it.
+        run-command: async func(command: string) -> result<command-result, string>;
+
+        /// Returns the simulated player's current world position.
+        get-position: async func() -> position;
+
+        /// Removes the simulated player from this test. Idempotent.
+        disconnect: async func();
+    }
+}

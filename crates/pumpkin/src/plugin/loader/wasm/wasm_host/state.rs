@@ -107,6 +107,10 @@ pub struct WasmResource<T> {
 
 pub type ServerResource = WasmResource<Arc<Server>>;
 pub type ContextResource = WasmResource<Arc<Context>>;
+pub type GameTestResource =
+    WasmResource<Arc<crate::plugin::gametest::GameTestContext>>;
+pub type SimulatedPlayerResource =
+    WasmResource<Arc<crate::plugin::gametest::SimulatedPlayer>>;
 pub type PlayerResource = WasmResource<Arc<Player>>;
 pub type JavaPlayerResource = WasmResource<Arc<Player>>;
 pub type BedrockPlayerResource = WasmResource<Arc<Player>>;
@@ -236,6 +240,24 @@ impl PluginHostState {
         provider: Arc<Context>,
     ) -> wasmtime::Result<wasmtime::component::Resource<T>> {
         let resource = self.resource_table.push(ContextResource { provider })?;
+        Ok(wasmtime::component::Resource::new_own(resource.rep()))
+    }
+
+    pub fn add_game_test<T>(
+        &mut self,
+        provider: Arc<crate::plugin::gametest::GameTestContext>,
+    ) -> wasmtime::Result<wasmtime::component::Resource<T>> {
+        let resource = self.resource_table.push(GameTestResource { provider })?;
+        Ok(wasmtime::component::Resource::new_own(resource.rep()))
+    }
+
+    pub fn add_simulated_player<T>(
+        &mut self,
+        provider: Arc<crate::plugin::gametest::SimulatedPlayer>,
+    ) -> wasmtime::Result<wasmtime::component::Resource<T>> {
+        let resource = self
+            .resource_table
+            .push(SimulatedPlayerResource { provider })?;
         Ok(wasmtime::component::Resource::new_own(resource.rep()))
     }
 

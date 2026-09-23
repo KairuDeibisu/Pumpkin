@@ -33,6 +33,7 @@ mod fillbiome;
 mod forceload;
 mod function;
 mod gamemode;
+mod gametest;
 mod gamerule;
 mod give;
 mod help;
@@ -185,6 +186,7 @@ pub fn default_dispatcher(
     experience::register(&mut dispatcher, registry);
     bossbar::register(&mut dispatcher, registry);
     gamerule::register(&mut dispatcher, registry);
+    gametest::register(&mut dispatcher, registry);
     stopsound::register(&mut dispatcher, registry);
     waypoint::register(&mut dispatcher, registry);
     raid::register(&mut dispatcher, registry);

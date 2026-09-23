@@ -67,4 +67,13 @@ pub trait Plugin: Send + Sync + 'static {
     ) -> PluginFuture<'_, Result<Vec<u8>, String>> {
         Box::pin(async move { Err("This plugin cannot receive messages.".to_string()) })
     }
+
+    /// Executes a plugin-registered GameTest callback.
+    fn handle_gametest(
+        &self,
+        _handler_id: u32,
+        _test: Arc<crate::plugin::gametest::GameTestContext>,
+    ) -> PluginFuture<'_, Result<(), String>> {
+        Box::pin(async move { Err("This plugin does not support GameTest callbacks".to_string()) })
+    }
 }

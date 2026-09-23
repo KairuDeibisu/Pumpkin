@@ -77,6 +77,9 @@ pub struct Server {
     /// Plugin manager
     pub plugin_manager: Arc<PluginManager>,
 
+    /// Plugin-registered GameTests keyed by class/name.
+    pub gametest_registry: Arc<crate::plugin::gametest::GameTestRegistry>,
+
     /// Permission manager for the server.
     pub permission_manager: Arc<PermissionManager>,
 
@@ -282,6 +285,7 @@ impl Server {
             telemetry_config,
             data: vanilla_data,
             plugin_manager: Arc::new(PluginManager::new(verify_plugin_signatures)),
+            gametest_registry: Arc::new(crate::plugin::gametest::GameTestRegistry::default()),
             permission_manager,
             container_id: 0.into(),
             recipe_manager: Arc::new(recipe::RecipeManager::new()),

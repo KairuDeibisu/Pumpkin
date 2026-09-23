@@ -47,6 +47,19 @@ impl Plugin for WasmPlugin {
                 .flatten()
         })
     }
+
+    fn handle_gametest(
+        &self,
+        handler_id: u32,
+        test: Arc<crate::plugin::gametest::GameTestContext>,
+    ) -> PluginFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            self.handle_gametest(handler_id, test)
+                .await
+                .map_err(|err| err.to_string())
+                .flatten()
+        })
+    }
 }
 
 pub struct WasmPluginLoader {

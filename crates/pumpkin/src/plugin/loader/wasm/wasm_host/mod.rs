@@ -119,6 +119,7 @@ pub struct PluginRuntime {
 
 pub enum PluginInstance {
     V0_1(wit::v0_1::Plugin),
+    V0_2(wit::v0_2::Plugin),
 }
 
 pub struct WasmPlugin {
@@ -212,12 +213,20 @@ impl PluginRuntime {
             .instantiate_pre(&component)
             .map_err(PluginInitError::ApiVersionMismatch)?;
 
-        let (plugin_instance, store, metadata) = {
-            let plugin_pre = wit::v0_1::prepare_plugin(&instance_pre)
-                .map_err(PluginInitError::ApiVersionMismatch)?;
-
-            wit::v0_1::init_plugin(&self.engine, plugin_pre, &self.legacy_sync_reentry).await?
-        };
+        let (plugin_instance, store, metadata, api_version) =
+            if let Ok(plugin_pre) = wit::v0_2::prepare_plugin(&instance_pre) {
+                let (plugin, store, metadata) =
+                    wit::v0_2::init_plugin(&self.engine, plugin_pre, &self.legacy_sync_reentry)
+                        .await?;
+                (plugin, store, metadata, "0.2")
+            } else {
+                let plugin_pre = wit::v0_1::prepare_plugin(&instance_pre)
+                    .map_err(PluginInitError::ApiVersionMismatch)?;
+                let (plugin, store, metadata) =
+                    wit::v0_1::init_plugin(&self.engine, plugin_pre, &self.legacy_sync_reentry)
+                        .await?;
+                (plugin, store, metadata, "0.1")
+            };
 
         let store = concurrent_store::start_legacy_store(
             store,
@@ -246,9 +255,9 @@ impl PluginRuntime {
             .map_err(PluginInitError::InstantiationFailed)?;
 
         tracing::debug!(
-            wasm_plugin_api = "0.1",
+            wasm_plugin_api = api_version,
             wasm_plugin_policy = concurrent_store::LegacySyncReentry::NAME,
-            "Loaded Wasm plugin with synchronous compatibility policy"
+            "Loaded Wasm plugin"
         );
 
         Ok((wasm_plugin, metadata))
@@ -274,6 +283,7 @@ fn setup_linker(engine: &Engine) -> wasmtime::Result<Linker<PluginHostState>> {
     wasmtime_wasi::p3::add_to_linker(&mut linker)?;
     wasmtime_wasi_http::p3::add_to_linker(&mut linker)?;
     wit::v0_1::add_to_linker(&mut linker)?;
+    wit::v0_2::add_to_linker(&mut linker)?;
     Ok(linker)
 }
 
@@ -401,6 +411,7 @@ impl WasmPlugin {
         let name = metadata.name.clone();
         let function = match self.plugin_instance.as_ref() {
             PluginInstance::V0_1(plugin) => plugin.func_on_load(),
+            PluginInstance::V0_2(plugin) => plugin.func_on_load(),
         };
 
         self.store
@@ -453,9 +464,14 @@ impl WasmPlugin {
         if let Some(plugin) = loaded_plugin {
             context.server.task_scheduler.disable_plugin(&plugin);
         }
+        context
+            .server
+            .gametest_registry
+            .remove_plugin(&context.get_metadata().name);
 
         let function = match self.plugin_instance.as_ref() {
             PluginInstance::V0_1(plugin) => plugin.func_on_unload(),
+            PluginInstance::V0_2(plugin) => plugin.func_on_unload(),
         };
         self.store
             .shutdown(move |accessor| {
@@ -489,6 +505,7 @@ impl WasmPlugin {
         let message = message.to_owned();
         let function = match self.plugin_instance.as_ref() {
             PluginInstance::V0_1(plugin) => plugin.func_handle_ipc_message(),
+            PluginInstance::V0_2(plugin) => plugin.func_handle_ipc_message(),
         };
 
         self.store
@@ -502,7 +519,55 @@ impl WasmPlugin {
             })
             .await
     }
+
+    pub async fn handle_gametest(
+        &self,
+        handler_id: u32,
+        test: Arc<crate::plugin::gametest::GameTestContext>,
+    ) -> Result<Result<(), String>, wasmtime::Error> {
+        let PluginInstance::V0_2(plugin) = self.plugin_instance.as_ref() else {
+            return Ok(Err(
+                "GameTest callbacks require pumpkin:plugin@0.2.0".to_string(),
+            ));
+        };
+        let function = plugin.func_handle_gametest();
+
+        self.store
+            .call_guest(move |mut guest| {
+                Box::pin(async move {
+                    let (test_resource, test_rep) = guest.with(|mut store| {
+                        let resource = store.data_mut().add_game_test(test)?;
+                        let rep = resource.rep();
+                        Ok::<_, wasmtime::Error>((resource, rep))
+                    })?;
+
+                    let result = guest
+                        .call(function, (handler_id, test_resource))
+                        .await
+                        .map(|(result,)| result);
+
+                    guest.with(|mut store| {
+                        if let Ok(resource) = store
+                            .data_mut()
+                            .resource_table
+                            .get::<crate::plugin::loader::wasm::wasm_host::state::GameTestResource>(
+                                &wasmtime::component::Resource::new_own(test_rep),
+                            )
+                        {
+                            resource.provider.cleanup();
+                        }
+                        let _ = store.data_mut().resource_table.delete::<
+                            crate::plugin::loader::wasm::wasm_host::state::GameTestResource,
+                        >(wasmtime::component::Resource::new_own(test_rep));
+                    });
+
+                    result
+                })
+            })
+            .await
+    }
 }
+
 
 pub trait DowncastResourceExt<E> {
     fn downcast_ref<'a>(&'a self, state: &'a mut PluginHostState) -> &'a E;
