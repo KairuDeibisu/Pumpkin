@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use pumpkin_util::{GameMode as InternalGameMode, math::vector3::Vector3};
-use wasmtime::component::{Access, Accessor, HasSelf, Resource};
+use wasmtime::component::Resource;
 
 use crate::plugin::loader::wasm::wasm_host::{
     state::{GameTestResource, PluginHostState, SimulatedPlayerResource},
@@ -23,27 +23,24 @@ fn game_mode(mode: Option<GameMode>) -> InternalGameMode {
     }
 }
 
-impl pumpkin::plugin::gametest::Host for PluginHostState {}
-
-impl pumpkin::plugin::gametest::HostWithStore<PluginHostState> for HasSelf<PluginHostState> {
+impl pumpkin::plugin::gametest::Host for PluginHostState {
     async fn register_test(
-        mut host: Access<'_, PluginHostState, Self>,
+        &mut self,
         test_class_name: String,
         test_name: String,
         handler_id: u32,
     ) -> wasmtime::Result<Result<(), String>> {
-        let state = host.get();
-        let plugin = state
+        let plugin = self
             .plugin
             .as_ref()
             .and_then(std::sync::Weak::upgrade)
             .ok_or_else(|| wasmtime::Error::msg("Plugin not found"))?;
-        let server = state
+        let server = self
             .server
             .as_ref()
             .cloned()
             .ok_or_else(|| wasmtime::Error::msg("Server not found"))?;
-        let plugin_name = state
+        let plugin_name = self
             .name
             .clone()
             .ok_or_else(|| wasmtime::Error::msg("Plugin name not available"))?;
@@ -59,18 +56,15 @@ impl pumpkin::plugin::gametest::HostWithStore<PluginHostState> for HasSelf<Plugi
     }
 }
 
-impl pumpkin::plugin::gametest::HostTest for PluginHostState {}
-
-impl pumpkin::plugin::gametest::HostTestWithStore<PluginHostState> for HasSelf<PluginHostState> {
+impl pumpkin::plugin::gametest::HostTest for PluginHostState {
     async fn spawn_simulated_player(
-        mut host: Access<'_, PluginHostState, Self>,
+        &mut self,
         test: Resource<Test>,
         location: Position,
         name: Option<String>,
         mode: Option<GameMode>,
     ) -> wasmtime::Result<Resource<SimulatedPlayer>> {
-        let state = host.get();
-        let context = state
+        let context = self
             .resource_table
             .get::<GameTestResource>(&Resource::new_own(test.rep()))
             .map_err(wasmtime::Error::from)?
@@ -82,41 +76,30 @@ impl pumpkin::plugin::gametest::HostTestWithStore<PluginHostState> for HasSelf<P
             name.unwrap_or_else(|| "Simulated Player".to_string()),
             game_mode(mode),
         );
-        state.add_simulated_player(player)
+        self.add_simulated_player(player)
     }
 
-    async fn drop(
-        accessor: &Accessor<PluginHostState, Self>,
-        rep: Resource<Test>,
-    ) -> wasmtime::Result<()> {
-        accessor.with(|mut host| {
-            let state = host.get();
-            if let Ok(resource) = state
-                .resource_table
-                .get::<GameTestResource>(&Resource::new_own(rep.rep()))
-            {
-                resource.provider.cleanup();
-            }
-            let _ = state
-                .resource_table
-                .delete::<GameTestResource>(Resource::new_own(rep.rep()));
-            Ok(())
-        })
+    async fn drop(&mut self, rep: Resource<Test>) -> wasmtime::Result<()> {
+        if let Ok(resource) = self
+            .resource_table
+            .get::<GameTestResource>(&Resource::new_own(rep.rep()))
+        {
+            resource.provider.cleanup();
+        }
+        let _ = self
+            .resource_table
+            .delete::<GameTestResource>(Resource::new_own(rep.rep()));
+        Ok(())
     }
 }
 
-impl pumpkin::plugin::gametest::HostSimulatedPlayer for PluginHostState {}
-
-impl pumpkin::plugin::gametest::HostSimulatedPlayerWithStore<PluginHostState>
-    for HasSelf<PluginHostState>
-{
+impl pumpkin::plugin::gametest::HostSimulatedPlayer for PluginHostState {
     async fn run_command(
-        mut host: Access<'_, PluginHostState, Self>,
+        &mut self,
         player: Resource<SimulatedPlayer>,
         command: String,
     ) -> wasmtime::Result<Result<CommandResult, String>> {
-        let state = host.get();
-        let player = state
+        let player = self
             .resource_table
             .get::<SimulatedPlayerResource>(&Resource::new_own(player.rep()))
             .map_err(wasmtime::Error::from)?
@@ -129,11 +112,10 @@ impl pumpkin::plugin::gametest::HostSimulatedPlayerWithStore<PluginHostState>
     }
 
     async fn get_position(
-        mut host: Access<'_, PluginHostState, Self>,
+        &mut self,
         player: Resource<SimulatedPlayer>,
     ) -> wasmtime::Result<Position> {
-        let state = host.get();
-        let position = state
+        let position = self
             .resource_table
             .get::<SimulatedPlayerResource>(&Resource::new_own(player.rep()))
             .map_err(wasmtime::Error::from)?
@@ -143,12 +125,10 @@ impl pumpkin::plugin::gametest::HostSimulatedPlayerWithStore<PluginHostState>
     }
 
     async fn disconnect(
-        mut host: Access<'_, PluginHostState, Self>,
+        &mut self,
         player: Resource<SimulatedPlayer>,
     ) -> wasmtime::Result<()> {
-        let state = host.get();
-        state
-            .resource_table
+        self.resource_table
             .get::<SimulatedPlayerResource>(&Resource::new_own(player.rep()))
             .map_err(wasmtime::Error::from)?
             .provider
@@ -156,22 +136,16 @@ impl pumpkin::plugin::gametest::HostSimulatedPlayerWithStore<PluginHostState>
         Ok(())
     }
 
-    async fn drop(
-        accessor: &Accessor<PluginHostState, Self>,
-        rep: Resource<SimulatedPlayer>,
-    ) -> wasmtime::Result<()> {
-        accessor.with(|mut host| {
-            let state = host.get();
-            if let Ok(resource) = state
-                .resource_table
-                .get::<SimulatedPlayerResource>(&Resource::new_own(rep.rep()))
-            {
-                resource.provider.disconnect();
-            }
-            let _ = state
-                .resource_table
-                .delete::<SimulatedPlayerResource>(Resource::new_own(rep.rep()));
-            Ok(())
-        })
+    async fn drop(&mut self, rep: Resource<SimulatedPlayer>) -> wasmtime::Result<()> {
+        if let Ok(resource) = self
+            .resource_table
+            .get::<SimulatedPlayerResource>(&Resource::new_own(rep.rep()))
+        {
+            resource.provider.disconnect();
+        }
+        let _ = self
+            .resource_table
+            .delete::<SimulatedPlayerResource>(Resource::new_own(rep.rep()));
+        Ok(())
     }
 }
