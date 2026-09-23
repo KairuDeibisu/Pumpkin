@@ -12,22 +12,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use wasmtime::component::Resource;
 
-pub struct PluginBossBar {
-    pub bossbar: Bossbar,
-    pub players: Vec<Uuid>,
-    pub server: Weak<Server>,
-}
-
-impl PluginBossBar {
-    #[must_use]
-    pub const fn new(bossbar: Bossbar, server: Weak<Server>) -> Self {
-        Self {
-            bossbar,
-            players: Vec::new(),
-            server,
-        }
-    }
-}
+pub use crate::plugin::loader::wasm::wasm_host::wit::v0_1::boss_bar::PluginBossBar;
 
 fn player_from_resource(
     state: &PluginHostState,
