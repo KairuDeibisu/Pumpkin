@@ -7,7 +7,7 @@ use crate::entity::ai::goal::Goal;
 use crate::entity::mob::Mob as InternalMob;
 use crate::entity::passive::tamable::TamableAnimal;
 use crate::plugin::loader::wasm::wasm_host::{
-    PluginInstance, WasmPlugin,
+    WasmPlugin,
     state::{MobResource, PluginHostState},
     wit::v0_1::entity::entity_from_resource,
     wit::v0_1::pumpkin::plugin::{
@@ -230,12 +230,13 @@ impl CustomWasmGoal {
         let plugin = self.plugin.clone();
         let goal_id = self.goal_id;
         let run = async move {
-            let function = match plugin.plugin_instance.as_ref() {
-                PluginInstance::V0_1(instance) => match call {
+            let function = {
+                let instance = plugin.plugin_instance.v0_1();
+                match call {
                     GoalCall::Start => instance.func_handle_ai_goal_start(),
                     GoalCall::Tick => instance.func_handle_ai_goal_tick(),
                     GoalCall::Stop => instance.func_handle_ai_goal_stop(),
-                },
+                }
             };
             if let Err(error) = plugin
                 .store

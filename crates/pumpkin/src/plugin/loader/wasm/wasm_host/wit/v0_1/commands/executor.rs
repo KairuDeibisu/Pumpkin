@@ -16,7 +16,7 @@ use crate::{
         },
     },
     plugin::loader::wasm::wasm_host::{
-        DowncastResourceExt, PluginInstance, WasmPlugin,
+        DowncastResourceExt, WasmPlugin,
         args::build_consumed_args_from_context,
         state::{CommandSenderResource, ConsumedArgsResource, PluginHostState, ServerResource},
         wit::v0_1::pumpkin::plugin::command::{CommandError as CommandErrorWit, SuggestionRequest},
@@ -62,9 +62,7 @@ impl CommandExecutor for WasmCommandExecutor {
         let server = self.server.clone();
         let consumed_args = build_consumed_args_from_context(context);
         let handler_id = self.handler_id;
-        let function = match self.plugin.plugin_instance.as_ref() {
-            PluginInstance::V0_1(plugin) => plugin.func_handle_command(),
-        };
+        let function = self.plugin.plugin_instance.v0_1().func_handle_command();
 
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
@@ -162,9 +160,11 @@ impl SuggestionProvider for WasmCommandSuggestionProvider {
             remaining: builder.remaining().to_string(),
         };
         let handler_id = self.handler_id;
-        let function = match self.plugin.plugin_instance.as_ref() {
-            PluginInstance::V0_1(plugin) => plugin.func_handle_command_suggestion(),
-        };
+        let function = self
+            .plugin
+            .plugin_instance
+            .v0_1()
+            .func_handle_command_suggestion();
 
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {

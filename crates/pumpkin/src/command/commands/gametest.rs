@@ -38,9 +38,9 @@ impl CommandExecutor for RunExecutor {
                 .run(run_server.clone(), world, &test_id)
                 .await;
             match result {
-                Ok(()) => sender.send_message(TextComponent::text(format!(
-                    "GameTest '{test_id}' passed"
-                ))),
+                Ok(()) => {
+                    sender.send_message(TextComponent::text(format!("GameTest '{test_id}' passed")))
+                }
                 Err(error) => sender.send_message(TextComponent::text(format!(
                     "GameTest '{test_id}' failed: {error}"
                 ))),
@@ -58,14 +58,7 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &PermissionRegistr
         PermissionDefault::Op(PermissionLvl::Two),
     ));
 
-    dispatcher.register(
-        command("gametest", DESCRIPTION)
-            .requires(PERMISSION)
-            .then(
-                literal("run").then(
-                    argument("test", StringArgumentType::SingleWord)
-                        .executes(RunExecutor),
-                ),
-            ),
-    );
+    dispatcher.register(command("gametest", DESCRIPTION).requires(PERMISSION).then(
+        literal("run").then(argument("test", StringArgumentType::SingleWord).executes(RunExecutor)),
+    ));
 }

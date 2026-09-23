@@ -122,6 +122,19 @@ pub enum PluginInstance {
     V0_2(wit::v0_2::Plugin),
 }
 
+impl PluginInstance {
+    #[expect(
+        clippy::unreachable,
+        reason = "callbacks are registered by ABI-specific imports"
+    )]
+    pub fn v0_1(&self) -> &wit::v0_1::Plugin {
+        match self {
+            Self::V0_1(plugin) => plugin,
+            Self::V0_2(_) => unreachable!("v0.1 callbacks are only registered by v0.1 imports"),
+        }
+    }
+}
+
 pub struct WasmPlugin {
     pub plugin_instance: Arc<PluginInstance>,
     pub store: concurrent_store::LegacyStore,
@@ -208,25 +221,46 @@ impl PluginRuntime {
 
         let component = load_component(&self.engine, &wasm_bytes, &self.cache_dir)?;
 
-        let instance_pre = self
-            .linker
+        let is_v0_2 = component
+            .component_type()
+            .exports(&self.engine)
+            .any(|(name, _)| name == "pumpkin:plugin/metadata@0.2.0");
+        if is_v0_2
+            && component
+                .component_type()
+                .imports(&self.engine)
+                .any(|(name, _)| name.starts_with("pumpkin:plugin/") && !name.ends_with("@0.2.0"))
+        {
+            return Err(PluginInitError::ApiVersionMismatch(wasmtime::Error::msg(
+                "v0.2 plugins cannot import a different Pumpkin ABI",
+            )));
+        }
+        let mut linker = self.linker.clone();
+        if is_v0_2 {
+            linker
+                .define_unknown_imports_as_traps(&component)
+                .map_err(PluginInitError::ApiVersionMismatch)?;
+            // The fallback helper also replaces imported resources with unit
+            // resources. Restore the backed GameTest resources and context drop.
+            wit::v0_2::add_to_linker(&mut linker).map_err(PluginInitError::ApiVersionMismatch)?;
+        }
+        let instance_pre = linker
             .instantiate_pre(&component)
             .map_err(PluginInitError::ApiVersionMismatch)?;
 
-        let (plugin_instance, store, metadata, api_version) =
-            if let Ok(plugin_pre) = wit::v0_2::prepare_plugin(&instance_pre) {
-                let (plugin, store, metadata) =
-                    wit::v0_2::init_plugin(&self.engine, plugin_pre, &self.legacy_sync_reentry)
-                        .await?;
-                (plugin, store, metadata, "0.2")
-            } else {
-                let plugin_pre = wit::v0_1::prepare_plugin(&instance_pre)
-                    .map_err(PluginInitError::ApiVersionMismatch)?;
-                let (plugin, store, metadata) =
-                    wit::v0_1::init_plugin(&self.engine, plugin_pre, &self.legacy_sync_reentry)
-                        .await?;
-                (plugin, store, metadata, "0.1")
-            };
+        let (plugin_instance, store, metadata, api_version) = if is_v0_2 {
+            let plugin_pre = wit::v0_2::prepare_plugin(&instance_pre)
+                .map_err(PluginInitError::ApiVersionMismatch)?;
+            let (plugin, store, metadata) =
+                wit::v0_2::init_plugin(&self.engine, plugin_pre, &self.legacy_sync_reentry).await?;
+            (plugin, store, metadata, "0.2")
+        } else {
+            let plugin_pre = wit::v0_1::prepare_plugin(&instance_pre)
+                .map_err(PluginInitError::ApiVersionMismatch)?;
+            let (plugin, store, metadata) =
+                wit::v0_1::init_plugin(&self.engine, plugin_pre, &self.legacy_sync_reentry).await?;
+            (plugin, store, metadata, "0.1")
+        };
 
         let store = concurrent_store::start_legacy_store(
             store,
@@ -409,10 +443,7 @@ impl WasmPlugin {
         let wasi_ctx = builder.build();
         let server = context.server.clone();
         let name = metadata.name.clone();
-        let function = match self.plugin_instance.as_ref() {
-            PluginInstance::V0_1(plugin) => plugin.func_on_load(),
-            PluginInstance::V0_2(plugin) => plugin.func_on_load(),
-        };
+        let instance = self.plugin_instance.clone();
 
         self.store
             .call_guest(move |mut guest| {
@@ -433,10 +464,20 @@ impl WasmPlugin {
                         store.data_mut().add_context(context)
                     })?;
 
-                    guest
-                        .call(function, (context_res,))
-                        .await
-                        .map(|(result,)| result)
+                    match instance.as_ref() {
+                        PluginInstance::V0_1(plugin) => {
+                            guest.call(plugin.func_on_load(), (context_res,)).await
+                        }
+                        PluginInstance::V0_2(plugin) => {
+                            guest
+                                .call(
+                                    plugin.func_on_load(),
+                                    (wasmtime::component::Resource::new_own(context_res.rep()),),
+                                )
+                                .await
+                        }
+                    }
+                    .map(|(result,)| result)
                 })
             })
             .await
@@ -469,10 +510,7 @@ impl WasmPlugin {
             .gametest_registry
             .remove_plugin(&context.get_metadata().name);
 
-        let function = match self.plugin_instance.as_ref() {
-            PluginInstance::V0_1(plugin) => plugin.func_on_unload(),
-            PluginInstance::V0_2(plugin) => plugin.func_on_unload(),
-        };
+        let instance = self.plugin_instance.clone();
         self.store
             .shutdown(move |accessor| {
                 Box::pin(async move {
@@ -481,15 +519,32 @@ impl WasmPlugin {
                         let rep = resource.rep();
                         Ok::<_, wasmtime::Error>((resource, rep))
                     })?;
-                    let result = function
-                        .call_concurrent(accessor, (context_res,))
-                        .await
+                    let result =
+                        match instance.as_ref() {
+                            PluginInstance::V0_1(plugin) => {
+                                plugin
+                                    .func_on_unload()
+                                    .call_concurrent(accessor, (context_res,))
+                                    .await
+                            }
+                            PluginInstance::V0_2(plugin) => plugin
+                                .func_on_unload()
+                                .call_concurrent(
+                                    accessor,
+                                    (wasmtime::component::Resource::new_own(context_res.rep()),),
+                                )
+                                .await,
+                        }
                         .map(|(result,)| result);
-                    accessor.with(|mut store| {
-                        let _ = store.data_mut().resource_table.delete::<
-                            crate::plugin::loader::wasm::wasm_host::state::ContextResource,
-                        >(wasmtime::component::Resource::new_own(context_rep));
-                    });
+                    // v0.1 borrows the context; v0.2 owns it and its guest
+                    // destructor controls the resource-table lifetime.
+                    if matches!(instance.as_ref(), PluginInstance::V0_1(_)) {
+                        accessor.with(|mut store| {
+                            let _ = store.data_mut().resource_table.delete::<
+                                crate::plugin::loader::wasm::wasm_host::state::ContextResource,
+                            >(wasmtime::component::Resource::new_own(context_rep));
+                        });
+                    }
                     result
                 })
             })
@@ -527,7 +582,7 @@ impl WasmPlugin {
     ) -> Result<Result<(), String>, wasmtime::Error> {
         let PluginInstance::V0_2(plugin) = self.plugin_instance.as_ref() else {
             return Ok(Err(
-                "GameTest callbacks require pumpkin:plugin@0.2.0".to_string(),
+                "GameTest callbacks require pumpkin:plugin@0.2.0".to_string()
             ));
         };
         let function = plugin.func_handle_gametest();
@@ -535,31 +590,15 @@ impl WasmPlugin {
         self.store
             .call_guest(move |mut guest| {
                 Box::pin(async move {
-                    let (test_resource, test_rep) = guest.with(|mut store| {
-                        let resource = store.data_mut().add_game_test(test)?;
-                        let rep = resource.rep();
-                        Ok::<_, wasmtime::Error>((resource, rep))
-                    })?;
-
+                    let test_resource =
+                        guest.with(|mut store| store.data_mut().add_game_test(test.clone()))?;
                     let result = guest
                         .call(function, (handler_id, test_resource))
                         .await
                         .map(|(result,)| result);
-
-                    guest.with(|mut store| {
-                        if let Ok(resource) = store
-                            .data_mut()
-                            .resource_table
-                            .get::<crate::plugin::loader::wasm::wasm_host::state::GameTestResource>(
-                                &wasmtime::component::Resource::new_own(test_rep),
-                            )
-                        {
-                            resource.provider.cleanup();
-                        }
-                        let _ = store.data_mut().resource_table.delete::<
-                            crate::plugin::loader::wasm::wasm_host::state::GameTestResource,
-                        >(wasmtime::component::Resource::new_own(test_rep));
-                    });
+                    // The guest owns the resource. Cleanup uses our Arc, not
+                    // a table index that a guest destructor may have freed.
+                    test.cleanup();
 
                     result
                 })
@@ -567,7 +606,6 @@ impl WasmPlugin {
             .await
     }
 }
-
 
 pub trait DowncastResourceExt<E> {
     fn downcast_ref<'a>(&'a self, state: &'a mut PluginHostState) -> &'a E;

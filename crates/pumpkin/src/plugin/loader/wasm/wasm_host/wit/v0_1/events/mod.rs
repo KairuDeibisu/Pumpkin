@@ -14,7 +14,7 @@ use crate::{
     plugin::{
         BoxFuture, EventHandler, Payload,
         loader::wasm::wasm_host::{
-            PluginInstance, WasmPlugin,
+            WasmPlugin,
             state::{PlayerResource, PluginHostState, TextComponentResource, WorldResource},
             wit::{self, v0_1::pumpkin},
         },
@@ -236,9 +236,7 @@ impl<E: Payload + ToFromWasmEvent + Clone + 'static> EventHandler<E> for WasmPlu
             let event = event.clone();
             let server = server.clone();
             let handler_id = self.handler_id;
-            let function = match self.plugin.plugin_instance.as_ref() {
-                PluginInstance::V0_1(plugin) => plugin.func_handle_event(),
-            };
+            let function = self.plugin.plugin_instance.v0_1().func_handle_event();
             if let Err(error) = self
                 .plugin
                 .store
@@ -284,9 +282,7 @@ impl<E: Payload + ToFromWasmEvent + Clone + 'static> EventHandler<E> for WasmPlu
             let owned_event = event.clone();
             let server = server.clone();
             let handler_id = self.handler_id;
-            let function = match self.plugin.plugin_instance.as_ref() {
-                PluginInstance::V0_1(plugin) => plugin.func_handle_event(),
-            };
+            let function = self.plugin.plugin_instance.v0_1().func_handle_event();
             let result = self
                 .plugin
                 .store

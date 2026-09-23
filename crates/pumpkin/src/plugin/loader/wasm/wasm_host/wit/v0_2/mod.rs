@@ -9,84 +9,28 @@ use pumpkin_host_bindings::v0_2::PluginPre;
 use wasmtime::component::{HasSelf, InstancePre, Linker};
 use wasmtime::{Engine, Store};
 
-pub mod advancement;
-// wasmtime's `bindgen!` requires every Host trait method to be `async fn`, even the ones whose
-// implementation here happens not to need to `.await` anything - so `unused_async_trait_impl`
-// can't be avoided without breaking the generated trait signatures.
-#[allow(clippy::unused_async_trait_impl)]
-pub mod block_entity;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod boss_bar;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod commands;
-pub mod common;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod context;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod datapack;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod display;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod enchantment;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod entity;
-pub mod events;
-pub mod forms;
+// v0.2 currently backs only GameTest. Other imports are linked as trapping
+// stubs from the actual component type at load time; v0.1 remains fully backed.
 pub mod gametest;
-pub mod generated_packets;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod gui;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod i18n;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod inventory;
-pub mod ipc;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod item_stack;
-pub mod java_dialogs;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod living_entity;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod logging;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod mob;
-pub mod permission;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod player;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod recipe;
-pub mod scheduler;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod scoreboard;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod server;
-pub mod status_effect;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod text;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod uuid;
-#[allow(clippy::unused_async_trait_impl)]
-pub mod world;
-
 pub use pumpkin_host_bindings::v0_2::{Plugin, pumpkin};
 
-impl pumpkin::plugin::java_packets::Host for PluginHostState {}
-impl pumpkin::plugin::bedrock_packets::Host for PluginHostState {}
-impl pumpkin::plugin::data_components::Host for PluginHostState {}
-impl pumpkin::plugin::enchantments::Host for PluginHostState {}
-impl pumpkin::plugin::biomes::Host for PluginHostState {}
-impl pumpkin::plugin::attributes::Host for PluginHostState {}
-impl pumpkin::plugin::advancement::Host for PluginHostState {}
-impl pumpkin::plugin::damage_types::Host for PluginHostState {}
-impl pumpkin::plugin::screens::Host for PluginHostState {}
-impl pumpkin::plugin::statistics::Host for PluginHostState {}
-impl pumpkin::plugin::game_rules::Host for PluginHostState {}
-impl pumpkin::plugin::game_events::Host for PluginHostState {}
-impl pumpkin::plugin::potions::Host for PluginHostState {}
-impl pumpkin::plugin::entity_statuses::Host for PluginHostState {}
-
 pub fn add_to_linker(linker: &mut Linker<PluginHostState>) -> wasmtime::Result<()> {
-    Plugin::add_to_linker::<_, HasSelf<_>>(linker, |state: &mut PluginHostState| state)?;
+    pumpkin::plugin::gametest::add_to_linker::<_, HasSelf<_>>(linker, |state| state)?;
+    // Lifecycle exports transfer an owned context even though its methods are
+    // outside this vertical slice. Register its identity and destructor.
+    linker.instance("pumpkin:plugin/context@0.2.0")?.resource(
+        "context",
+        wasmtime::component::ResourceType::host::<pumpkin::plugin::context::Context>(),
+        |mut store, rep| {
+            store
+                .data_mut()
+                .resource_table
+                .delete::<crate::plugin::loader::wasm::wasm_host::state::ContextResource>(
+                wasmtime::component::Resource::new_own(rep),
+            )?;
+            Ok(())
+        },
+    )?;
     Ok(())
 }
 

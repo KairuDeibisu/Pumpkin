@@ -107,10 +107,8 @@ pub struct WasmResource<T> {
 
 pub type ServerResource = WasmResource<Arc<Server>>;
 pub type ContextResource = WasmResource<Arc<Context>>;
-pub type GameTestResource =
-    WasmResource<Arc<crate::plugin::gametest::GameTestContext>>;
-pub type SimulatedPlayerResource =
-    WasmResource<Arc<crate::plugin::gametest::SimulatedPlayer>>;
+pub type GameTestResource = WasmResource<Arc<crate::plugin::gametest::GameTestContext>>;
+pub type SimulatedPlayerResource = WasmResource<Arc<crate::plugin::gametest::SimulatedPlayer>>;
 pub type PlayerResource = WasmResource<Arc<Player>>;
 pub type JavaPlayerResource = WasmResource<Arc<Player>>;
 pub type BedrockPlayerResource = WasmResource<Arc<Player>>;

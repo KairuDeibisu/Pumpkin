@@ -2290,11 +2290,11 @@ impl WasmChunkGenerator {
             proto_chunk: Arc::clone(&shared_proto_chunk),
         };
 
-        let function = match self.plugin.plugin_instance.as_ref() {
-            crate::plugin::loader::wasm::wasm_host::PluginInstance::V0_1(plugin) => {
-                plugin.func_handle_generate_phase()
-            }
-        };
+        let function = self
+            .plugin
+            .plugin_instance
+            .v0_1()
+            .func_handle_generate_phase();
         let generator_id = self.generator_id;
         let run = async {
             let result = self

@@ -113,12 +113,10 @@ impl GameTestRegistry {
         let registration = self
             .get(id)
             .ok_or_else(|| format!("Unknown plugin GameTest '{id}'"))?;
-        let plugin = registration.plugin.upgrade().ok_or_else(|| {
-            format!(
-                "Plugin '{}' is no longer loaded",
-                registration.plugin_name
-            )
-        })?;
+        let plugin = registration
+            .plugin
+            .upgrade()
+            .ok_or_else(|| format!("Plugin '{}' is no longer loaded", registration.plugin_name))?;
 
         let test = Arc::new(GameTestContext::new(server, world));
         let result = plugin
@@ -229,19 +227,7 @@ impl SimulatedPlayer {
             return Err(format!("Simulated player '{}' is disconnected", self.name));
         }
 
-        let world = self.entity.world.load_full();
-        let position = self.entity.pos.load();
-        let entity: Arc<dyn EntityBase> = self.entity.clone();
-        let source = CommandSource::new(
-            CommandSender::Dummy,
-            world,
-            Some(entity),
-            position,
-            Vector2::new(self.entity.pitch.load(), self.entity.yaw.load()),
-            self.name.clone(),
-            TextComponent::text(self.name.clone()),
-            self.server.clone(),
-        );
+        let source = self.command_source();
 
         let command = command.trim().trim_start_matches('/');
         if command.is_empty() {
@@ -252,7 +238,23 @@ impl SimulatedPlayer {
             .command_dispatcher
             .load()
             .execute_input(command, &source)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.message.get_text())
+    }
+
+    fn command_source(&self) -> CommandSource {
+        let world = self.entity.world.load_full();
+        let position = self.entity.pos.load();
+        let entity: Arc<dyn EntityBase> = self.entity.clone();
+        CommandSource::new(
+            CommandSender::Dummy,
+            world,
+            Some(entity),
+            position,
+            Vector2::new(self.entity.pitch.load(), self.entity.yaw.load()),
+            self.name.clone(),
+            TextComponent::text(self.name.clone()),
+            self.server.clone(),
+        )
     }
 
     pub fn disconnect(&self) {
@@ -267,7 +269,55 @@ impl SimulatedPlayer {
 
 #[cfg(test)]
 mod tests {
-    use super::GameTestRegistry;
+    use super::*;
+
+    struct TestPlugin;
+    impl Plugin for TestPlugin {}
+
+    #[test]
+    fn gametest_registration_retains_identity_and_rejects_other_plugins() {
+        let registry = GameTestRegistry::default();
+        let plugin: Arc<dyn Plugin> = Arc::new(TestPlugin);
+        let weak = Arc::downgrade(&plugin);
+        registry
+            .register(
+                "owner".into(),
+                weak.clone(),
+                "Suite".into(),
+                "Test".into(),
+                42,
+            )
+            .unwrap();
+        let registration = registry.get("SUITE:test").unwrap();
+        assert_eq!(registration.plugin_name, "owner");
+        assert_eq!(registration.id(), "Suite:Test");
+        assert_eq!(registration.handler_id, 42);
+        assert!(Weak::ptr_eq(&registration.plugin, &weak));
+        assert!(
+            registry
+                .register(
+                    "other".into(),
+                    weak.clone(),
+                    "suite".into(),
+                    "test".into(),
+                    9
+                )
+                .is_err()
+        );
+        assert_eq!(registry.get("suite:test").unwrap().handler_id, 42);
+        // The owning plugin can replace its own registration.
+        registry
+            .register("owner".into(), weak, "Suite".into(), "Test".into(), 43)
+            .unwrap();
+        assert_eq!(registry.get("suite:test").unwrap().handler_id, 43);
+        registry.remove_plugin("other");
+        assert!(registry.get("suite:test").is_some());
+        registry.remove_plugin("owner");
+        assert!(registry.get("suite:test").is_none());
+        // Registrations must not keep unloaded plugins alive.
+        drop(plugin);
+        assert!(registration.plugin.upgrade().is_none());
+    }
 
     #[test]
     fn gametest_keys_are_case_insensitive() {
@@ -275,5 +325,171 @@ mod tests {
             GameTestRegistry::key("PumpkinTests", "simulatedPlayerTeleport"),
             "pumpkintests:simulatedplayerteleport"
         );
+    }
+
+    struct CallbackPlugin {
+        players: Mutex<Vec<Arc<SimulatedPlayer>>>,
+        fail: bool,
+    }
+
+    impl Plugin for CallbackPlugin {
+        fn handle_gametest(
+            &self,
+            handler_id: u32,
+            test: Arc<GameTestContext>,
+        ) -> crate::plugin::PluginFuture<'_, Result<(), String>> {
+            Box::pin(async move {
+                assert_eq!(handler_id, 73);
+                let player = test.spawn_simulated_player(
+                    Vector3::new(0.0, 80.0, 0.0),
+                    "PumpkinBot".into(),
+                    GameMode::Survival,
+                );
+                assert_eq!(player.position(), Vector3::new(0.0, 80.0, 0.0));
+                let source = player.command_source();
+                assert!(Arc::ptr_eq(
+                    source.entity.as_ref().unwrap(),
+                    &(player.entity.clone() as Arc<dyn EntityBase>)
+                ));
+                // This exercises the parser, @s selector, teleport executor and EntityBase::teleport.
+                assert!(player.run_command("tp @s 10 80 10").unwrap() > 0);
+                assert_eq!(player.position(), Vector3::new(10.0, 80.0, 10.0));
+                self.players.lock().unwrap().push(player);
+                if self.fail {
+                    Err("intentional guest failure".into())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+
+    async fn test_server() -> (tempfile::TempDir, Arc<Server>) {
+        use pumpkin_config::{AdvancedConfiguration, BasicConfiguration};
+        let directory = tempfile::tempdir().unwrap();
+        let basic = BasicConfiguration {
+            default_level_name: directory
+                .path()
+                .join("world")
+                .to_string_lossy()
+                .into_owned(),
+            allow_nether: false,
+            allow_end: false,
+            allow_chat_reports: false,
+            ..Default::default()
+        };
+        let mut advanced = AdvancedConfiguration::default();
+        advanced.networking.bedrock.online_mode = false;
+        let data = crate::data::VanillaData {
+            banned_ip_list: RwLock::new(Default::default()),
+            banned_player_list: RwLock::new(Default::default()),
+            operator_config: RwLock::new(Default::default()),
+            user_cache: RwLock::new(Default::default()),
+            whitelist_config: RwLock::new(Default::default()),
+        };
+        let server = Server::new(basic, advanced, Default::default(), data).await;
+        (directory, server)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn gametest_command_dispatch_and_cleanup_after_success_and_failure() {
+        let (_directory, server) = test_server().await;
+        let world = server.worlds.load()[0].clone();
+        for fail in [false, true] {
+            let callback = Arc::new(CallbackPlugin {
+                players: Mutex::new(Vec::new()),
+                fail,
+            });
+            let plugin: Arc<dyn Plugin> = callback.clone();
+            server
+                .gametest_registry
+                .register(
+                    "test".into(),
+                    Arc::downgrade(&plugin),
+                    "Suite".into(),
+                    "Teleport".into(),
+                    73,
+                )
+                .unwrap();
+            let result = server
+                .gametest_registry
+                .run(server.clone(), world.clone(), "suite:teleport")
+                .await;
+            assert_eq!(
+                result,
+                if fail {
+                    Err("intentional guest failure".into())
+                } else {
+                    Ok(())
+                }
+            );
+            let players = callback.players.lock().unwrap();
+            assert_eq!(players.len(), 1);
+            let player = &players[0];
+            assert!(player.is_disconnected());
+            player.disconnect();
+            player.disconnect();
+            assert!(player.is_disconnected());
+            assert!(
+                player
+                    .run_command("tp @s 0 80 0")
+                    .unwrap_err()
+                    .contains("disconnected")
+            );
+        }
+    }
+
+    /// Run with PUMPKIN_GAMETEST_COMPONENT pointing to the built TS example.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires the built TypeScript GameTest component"]
+    async fn gametest_component_round_trip() {
+        use crate::plugin::{
+            Context,
+            loader::{PluginLoader, wasm::WasmPluginLoader},
+        };
+        let path = std::env::var("PUMPKIN_GAMETEST_COMPONENT").expect("component path");
+        let (_directory, server) = test_server().await;
+        let loader = WasmPluginLoader::new(false);
+        let (plugin, metadata, _data) = loader
+            .load(std::path::Path::new(&path))
+            .await
+            .expect("load v0.2 component");
+        let name = metadata.name.clone();
+        let context = Arc::new(Context::new(
+            metadata,
+            server.clone(),
+            Default::default(),
+            server.plugin_manager.clone(),
+            Default::default(),
+        ));
+        plugin
+            .on_load(context.clone())
+            .await
+            .expect("register during on-load");
+        let registration = server
+            .gametest_registry
+            .get("pumpkintests:simulatedplayerteleport")
+            .expect("guest registration");
+        assert_eq!(registration.plugin_name, name);
+        let world = server.worlds.load()[0].clone();
+        let result = server
+            .gametest_registry
+            .run(server.clone(), world, &registration.id())
+            .await;
+        if let Ok(expected) = std::env::var("PUMPKIN_GAMETEST_EXPECT_ERROR") {
+            assert!(result.unwrap_err().contains(&expected));
+        } else {
+            result.expect("guest teleport assertion");
+        }
+        plugin.on_unload(context).await.expect("unload guest");
+        assert!(server.gametest_registry.get(&registration.id()).is_none());
+
+        if let Ok(path) = std::env::var("PUMPKIN_V01_COMPONENT") {
+            let (_plugin, metadata, _) = loader
+                .load(std::path::Path::new(&path))
+                .await
+                .expect("load v0.1 component");
+            assert!(!metadata.name.is_empty());
+        }
     }
 }

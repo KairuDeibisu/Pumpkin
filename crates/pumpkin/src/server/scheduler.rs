@@ -198,11 +198,7 @@ impl TaskScheduler {
             let server_clone = server.clone();
 
             server.spawn_task(async move {
-                let function = match plugin.plugin_instance.as_ref() {
-                    crate::plugin::loader::wasm::wasm_host::PluginInstance::V0_1(instance) => {
-                        instance.func_handle_task()
-                    }
-                };
+                let function = plugin.plugin_instance.v0_1().func_handle_task();
                 if let Err(error) = plugin
                     .store
                     .call_guest(move |mut guest| {
