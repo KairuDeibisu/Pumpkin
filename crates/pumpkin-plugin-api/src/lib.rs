@@ -107,6 +107,8 @@ pub mod recipe;
 pub mod scheduler;
 /// Scoreboard team management and builder utilities.
 pub mod team;
+/// WIT 0.2 GameTest plugin bindings.
+pub mod v0_2;
 /// Custom world and chunk generation utilities and traits.
 pub mod worldgen;
 

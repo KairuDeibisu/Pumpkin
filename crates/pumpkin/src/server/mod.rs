@@ -144,9 +144,10 @@ pub struct Server {
     pub player_idle_timeout: AtomicI32,
     /// Manages scheduled tasks (e.g. from plugins)
     pub task_scheduler: Arc<TaskScheduler>,
+    pub game_test_functions: crate::plugin::loader::wasm::wasm_host::wit::v0_2::GameTestFunctions,
     /// Manages scheduled datapack functions (`/schedule`)
     pub scheduled_functions: Arc<crate::server::scheduler::ScheduledFunctionQueue>,
-    tasks: TaskTracker,
+    pub(crate) tasks: TaskTracker,
     pub runtime: tokio::runtime::Handle,
 
     // world stuff which maybe should be put into a struct
@@ -313,6 +314,8 @@ impl Server {
             tasks: TaskTracker::new(),
             runtime: tokio::runtime::Handle::current(),
             task_scheduler: Arc::new(TaskScheduler::new()),
+            game_test_functions:
+                crate::plugin::loader::wasm::wasm_host::wit::v0_2::GameTestFunctions::default(),
             scheduled_functions: Arc::new(crate::server::scheduler::ScheduledFunctionQueue::new()),
             server_guid: rand::random(),
             player_idle_timeout: AtomicI32::new(0),
@@ -742,6 +745,7 @@ impl Server {
     }
 
     pub async fn shutdown(&self) {
+        self.game_test_functions.shutdown();
         self.tasks.close();
         debug!("Awaiting tasks for server");
         self.tasks.wait().await;

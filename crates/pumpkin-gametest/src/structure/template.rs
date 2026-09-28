@@ -166,14 +166,18 @@ fn resolve_palette(structure: &NbtCompound) -> GameTestResult<Vec<PaletteEntry>>
             .extract_compound()
             .ok_or_else(|| invalid_structure(format!("Palette entry {index} is not a compound")))?;
         let name = entry
-            .get_string("Name")
-            .ok_or_else(|| invalid_structure(format!("Palette entry {index} is missing 'Name'")))?;
+            .get_string("id")
+            .or_else(|| entry.get_string("Name"))
+            .ok_or_else(|| invalid_structure(format!("Palette entry {index} is missing 'id'")))?;
         let block = Block::from_name(name).ok_or_else(|| {
             invalid_structure(format!("Unknown block '{name}' in structure palette"))
         })?;
 
         let mut test_mode = None;
-        let state = if let Some(properties) = entry.get_compound("Properties") {
+        let state = if let Some(properties) = entry
+            .get_compound("properties")
+            .or_else(|| entry.get_compound("Properties"))
+        {
             let mut property_pairs = Vec::with_capacity(properties.child_tags.len());
             for (property_name, property_value) in &properties.child_tags {
                 let property_value = property_value.extract_string().ok_or_else(|| {
@@ -220,4 +224,26 @@ fn resolve_palette(structure: &NbtCompound) -> GameTestResult<Vec<PaletteEntry>>
 
 fn invalid_structure(message: impl Into<String>) -> GameTestError {
     GameTestError::InvalidStructure(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::GameTestStructureTemplate;
+    use pumpkin_data::Block;
+    use pumpkin_nbt::nbt_compress::read_gzip_compound_tag;
+
+    #[test]
+    fn loads_vanilla_empty_structure() -> Result<(), Box<dyn std::error::Error>> {
+        let bytes =
+            include_bytes!("../../../../assets/datapack/data/minecraft/structure/empty.nbt");
+        let nbt = read_gzip_compound_tag(Cursor::new(bytes))?;
+        let template = GameTestStructureTemplate::from_nbt(&nbt)?;
+        assert_eq!(template.size(), [1, 1, 1]);
+        assert_eq!(template.block_count(), 1);
+        assert_eq!(template.blocks()[0].position, [0, 0, 0]);
+        assert_eq!(template.blocks()[0].state, Block::AIR.default_state.id);
+        Ok(())
+    }
 }

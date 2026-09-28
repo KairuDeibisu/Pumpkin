@@ -1,0 +1,9 @@
+interface gametest {
+    /// A single execution of a datapack test instance.
+    resource test {
+        succeed: func() -> result<_, string>;
+    }
+
+    /// Registers the callback for a test function identified by class:name.
+    register: func(test-class-name: string, test-name: string, handler-id: u32) -> result<_, string>;
+}

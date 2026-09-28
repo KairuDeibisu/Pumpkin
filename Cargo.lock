@@ -3368,6 +3368,7 @@ dependencies = [
  "pumpkin-nbt",
  "pumpkin-plugin-runtime",
  "pumpkin-protocol",
+ "pumpkin-scheduler",
  "pumpkin-util",
  "pumpkin-world",
  "rand",

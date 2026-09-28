@@ -118,7 +118,8 @@ pub struct PluginRuntime {
 }
 
 pub enum PluginInstance {
-    V0_1(wit::v0_1::Plugin),
+    V0_1(Box<wit::v0_1::Plugin>),
+    V0_2(wit::v0_2::Plugin),
 }
 
 pub struct WasmPlugin {
@@ -212,12 +213,15 @@ impl PluginRuntime {
             .instantiate_pre(&component)
             .map_err(PluginInitError::ApiVersionMismatch)?;
 
-        let (plugin_instance, store, metadata) = {
-            let plugin_pre = wit::v0_1::prepare_plugin(&instance_pre)
-                .map_err(PluginInitError::ApiVersionMismatch)?;
+        let (plugin_instance, store, metadata) =
+            if let Ok(pre) = wit::v0_2::prepare_plugin(&instance_pre) {
+                wit::v0_2::init_plugin(&self.engine, pre, &self.legacy_sync_reentry).await?
+            } else {
+                let plugin_pre = wit::v0_1::prepare_plugin(&instance_pre)
+                    .map_err(PluginInitError::ApiVersionMismatch)?;
 
-            wit::v0_1::init_plugin(&self.engine, plugin_pre, &self.legacy_sync_reentry).await?
-        };
+                wit::v0_1::init_plugin(&self.engine, plugin_pre, &self.legacy_sync_reentry).await?
+            };
 
         let store = concurrent_store::start_legacy_store(
             store,
@@ -246,7 +250,10 @@ impl PluginRuntime {
             .map_err(PluginInitError::InstantiationFailed)?;
 
         tracing::debug!(
-            wasm_plugin_api = "0.1",
+            wasm_plugin_api = match wasm_plugin.plugin_instance.as_ref() {
+                PluginInstance::V0_1(_) => "0.1",
+                PluginInstance::V0_2(_) => "0.2",
+            },
             wasm_plugin_policy = concurrent_store::LegacySyncReentry::NAME,
             "Loaded Wasm plugin with synchronous compatibility policy"
         );
@@ -274,6 +281,7 @@ fn setup_linker(engine: &Engine) -> wasmtime::Result<Linker<PluginHostState>> {
     wasmtime_wasi::p3::add_to_linker(&mut linker)?;
     wasmtime_wasi_http::p3::add_to_linker(&mut linker)?;
     wit::v0_1::add_to_linker(&mut linker)?;
+    wit::v0_2::add_to_linker(&mut linker)?;
     Ok(linker)
 }
 
@@ -309,6 +317,47 @@ fn load_component(
 }
 
 impl WasmPlugin {
+    pub async fn handle_game_test(
+        &self,
+        handler_id: u32,
+        execution: Arc<pumpkin_gametest::GameTestExecution>,
+    ) -> wasmtime::Result<()> {
+        let PluginInstance::V0_2(plugin) = self.plugin_instance.as_ref() else {
+            return Err(wasmtime::Error::msg("GameTest functions require WIT 0.2"));
+        };
+        let function = plugin.func_handle_game_test();
+        self.store
+            .call_guest(move |mut guest| {
+                Box::pin(async move {
+                    let (test, rep) = guest.with(|mut store| {
+                        let test = store
+                            .data_mut()
+                            .add::<wit::v0_2::pumpkin::plugin::gametest::Test>(execution)?;
+                        let rep = test.rep();
+                        Ok::<_, wasmtime::Error>((test, rep))
+                    })?;
+                    let result = guest
+                        .call(
+                            function,
+                            (
+                                handler_id,
+                                wasmtime::component::Resource::new_borrow(test.rep()),
+                            ),
+                        )
+                        .await;
+                    guest.with(|mut store| {
+                        let _ = store.data_mut().resource_table.delete::<Arc<
+                            pumpkin_gametest::GameTestExecution,
+                        >>(
+                            wasmtime::component::Resource::new_own(rep),
+                        );
+                    });
+                    result?.0.map_err(wasmtime::Error::msg)
+                })
+            })
+            .await
+    }
+
     #[allow(clippy::too_many_lines)]
     pub async fn on_load(
         &self,
@@ -399,36 +448,46 @@ impl WasmPlugin {
         let wasi_ctx = builder.build();
         let server = context.server.clone();
         let name = metadata.name.clone();
-        let function = match self.plugin_instance.as_ref() {
-            PluginInstance::V0_1(plugin) => plugin.func_on_load(),
-        };
-
-        self.store
+        let instance = self.plugin_instance.clone();
+        let registration_server = server.clone();
+        let result = self
+            .store
             .call_guest(move |mut guest| {
                 Box::pin(async move {
-                    let context_res = guest.with(|mut store| {
+                    guest.with(|mut store| {
                         if let Some(mb) = max_memory_mb {
                             let limit_bytes = (mb as usize).saturating_mul(1024 * 1024);
                             store.data_mut().limits = wasmtime::StoreLimitsBuilder::new()
                                 .memory_size(limit_bytes)
                                 .build();
                         }
-
                         store.data_mut().permissions = filtered_permissions;
                         store.data_mut().wasi_ctx = wasi_ctx;
                         store.data_mut().wasi_http_hooks.allow_outbound = allow_http_outbound;
                         store.data_mut().server = Some(server);
                         store.data_mut().name = Some(name);
-                        store.data_mut().add(context)
-                    })?;
-
-                    guest
-                        .call(function, (context_res,))
-                        .await
-                        .map(|(result,)| result)
+                    });
+                    match instance.as_ref() {
+                        PluginInstance::V0_1(plugin) => {
+                            let context_res =
+                                guest.with(|mut store| store.data_mut().add(context))?;
+                            guest
+                                .call(plugin.func_on_load(), (context_res,))
+                                .await
+                                .map(|(result,)| result)
+                        }
+                        PluginInstance::V0_2(plugin) => guest
+                            .call(plugin.func_on_load(), ())
+                            .await
+                            .map(|(result,)| result),
+                    }
                 })
             })
-            .await
+            .await;
+        if !matches!(&result, Ok(Ok(()))) {
+            registration_server.game_test_functions.remove_plugin(self);
+        }
+        result
     }
 
     pub async fn on_unload(
@@ -454,27 +513,36 @@ impl WasmPlugin {
             context.server.task_scheduler.disable_plugin(&plugin);
         }
 
-        let function = match self.plugin_instance.as_ref() {
-            PluginInstance::V0_1(plugin) => plugin.func_on_unload(),
-        };
+        context.server.game_test_functions.remove_plugin(self);
+        let instance = self.plugin_instance.clone();
         self.store
             .shutdown(move |accessor| {
                 Box::pin(async move {
-                    let (context_res, context_rep) = accessor.with(|mut store| {
-                        let resource = store.data_mut().add(context)?;
-                        let rep = resource.rep();
-                        Ok::<_, wasmtime::Error>((resource, rep))
-                    })?;
-                    let result = function
-                        .call_concurrent(accessor, (context_res,))
-                        .await
-                        .map(|(result,)| result);
-                    accessor.with(|mut store| {
-                        let _ = store.data_mut().resource_table.delete::<Arc<Context>>(
-                            wasmtime::component::Resource::new_own(context_rep),
-                        );
-                    });
-                    result
+                    match instance.as_ref() {
+                        PluginInstance::V0_2(plugin) => plugin
+                            .func_on_unload()
+                            .call_concurrent(accessor, ())
+                            .await
+                            .map(|(result,)| result),
+                        PluginInstance::V0_1(plugin) => {
+                            let (context_res, context_rep) = accessor.with(|mut store| {
+                                let resource = store.data_mut().add(context)?;
+                                let rep = resource.rep();
+                                Ok::<_, wasmtime::Error>((resource, rep))
+                            })?;
+                            let result = plugin
+                                .func_on_unload()
+                                .call_concurrent(accessor, (context_res,))
+                                .await
+                                .map(|(result,)| result);
+                            accessor.with(|mut store| {
+                                let _ = store.data_mut().resource_table.delete::<Arc<Context>>(
+                                    wasmtime::component::Resource::new_own(context_rep),
+                                );
+                            });
+                            result
+                        }
+                    }
                 })
             })
             .await
@@ -489,6 +557,9 @@ impl WasmPlugin {
         let message = message.to_owned();
         let function = match self.plugin_instance.as_ref() {
             PluginInstance::V0_1(plugin) => plugin.func_handle_ipc_message(),
+            PluginInstance::V0_2(_) => {
+                return Ok(Err("This plugin cannot receive messages".to_owned()));
+            }
         };
 
         self.store

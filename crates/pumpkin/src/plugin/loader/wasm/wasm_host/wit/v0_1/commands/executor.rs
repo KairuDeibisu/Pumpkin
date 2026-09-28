@@ -61,6 +61,11 @@ impl CommandExecutor for WasmCommandExecutor {
         let handler_id = self.handler_id;
         let function = match self.plugin.plugin_instance.as_ref() {
             PluginInstance::V0_1(plugin) => plugin.func_handle_command(),
+            PluginInstance::V0_2(_) => {
+                return Err(DISPATCHER_PARSE_EXCEPTION.create_without_context(
+                    TextComponent::text("Commands require the WIT 0.1 interface"),
+                ));
+            }
         };
 
         tokio::task::block_in_place(|| {
@@ -140,6 +145,7 @@ impl SuggestionProvider for WasmCommandSuggestionProvider {
         let handler_id = self.handler_id;
         let function = match self.plugin.plugin_instance.as_ref() {
             PluginInstance::V0_1(plugin) => plugin.func_handle_command_suggestion(),
+            PluginInstance::V0_2(_) => return Suggestions::empty(),
         };
 
         tokio::task::block_in_place(|| {

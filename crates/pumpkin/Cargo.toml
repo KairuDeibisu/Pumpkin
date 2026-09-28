@@ -18,6 +18,7 @@ LegalCopyright = "Copyright © 2026 Aleksander Medvedev"
 doctest = false
 
 [dependencies]
+pumpkin-scheduler = { path = "../pumpkin-scheduler" }
 # pumpkin
 arc-swap.workspace = true
 rayon.workspace = true

@@ -16,6 +16,7 @@ use crate::structure::{
     remove_barriers,
 };
 use crate::world::GameTestWorld;
+use crate::{GameTestExecution, GameTestFunction};
 
 enum RunningEvaluation {
     Continue,
@@ -36,6 +37,8 @@ pub struct GameTestSession {
     test_z: i32,
     chunks_loaded: bool,
     started_at: Option<Instant>,
+    function: Option<Arc<dyn GameTestFunction>>,
+    execution: Option<Arc<GameTestExecution>>,
 }
 
 impl GameTestSession {
@@ -80,6 +83,8 @@ impl GameTestSession {
             test_z,
             chunks_loaded: false,
             started_at: None,
+            function: None,
+            execution: None,
         }
     }
 
@@ -103,7 +108,15 @@ impl GameTestSession {
             test_z: self.test_z,
             chunks_loaded: false,
             started_at: None,
+            function: self.function.clone(),
+            execution: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_function(mut self, function: Arc<dyn GameTestFunction>) -> Self {
+        self.function = Some(function);
+        self
     }
 
     #[must_use]
@@ -225,7 +238,7 @@ impl GameTestSession {
 
         // BlockBasedTestInstance installs onEachTick for the half-open range
         // [0, timeoutTicks), so timeoutTicks itself has no ACCEPT/FAIL/LOG check.
-        if tick == self.test.max_ticks() {
+        if tick == self.test.max_ticks() && self.function.is_none() {
             self.state = GameTestState::Running {
                 elapsed_ticks: tick,
             };
@@ -254,6 +267,17 @@ impl GameTestSession {
         // Vanilla starts GameTestInfo's stopwatch immediately before invoking the
         // test body, so structure placement and setup ticks are not part of run time.
         self.started_at.get_or_insert_with(Instant::now);
+
+        if let Some(function) = &self.function {
+            if let Some(placement) = &self.placement {
+                self.world
+                    .set_test_instance_running(placement.test_instance_pos())
+                    .await?;
+            }
+            let execution = Arc::new(GameTestExecution::default());
+            self.execution = Some(execution.clone());
+            return function.start(execution);
+        }
 
         let start_blocks = self.test_block_positions(TestBlockMode::Start);
         if start_blocks.is_empty() {
@@ -285,6 +309,17 @@ impl GameTestSession {
     }
 
     async fn evaluate_running(&self, tick: u32) -> GameTestResult<RunningEvaluation> {
+        if let Some(execution) = &self.execution {
+            return Ok(match execution.result() {
+                Some(Ok(())) => RunningEvaluation::Passed,
+                Some(Err(message)) => RunningEvaluation::Failed(GameTestError::Assertion {
+                    tick,
+                    position: None,
+                    message,
+                }),
+                None => RunningEvaluation::Continue,
+            });
+        }
         let accept_blocks = self.test_block_positions(TestBlockMode::Accept);
         if accept_blocks.is_empty() {
             return Ok(RunningEvaluation::Failed(GameTestError::Assertion {
@@ -323,6 +358,9 @@ impl GameTestSession {
     }
 
     async fn handle_attempt_pass(&mut self, tick: u32) {
+        if let Some(execution) = &self.execution {
+            execution.close();
+        }
         if let Some(placement) = &self.placement {
             // GameTestInfo::succeed removes non-player entities before the listeners
             // report success or schedule a copyReset rerun.
@@ -362,6 +400,9 @@ impl GameTestSession {
         error: GameTestError,
         marker: Option<(BlockPos, String)>,
     ) {
+        if let Some(execution) = &self.execution {
+            execution.close();
+        }
         if let Some(placement) = &self.placement {
             let message = error.to_string();
             if let Err(controller_error) = self
@@ -396,6 +437,14 @@ impl GameTestSession {
                 ))
             })
             .collect()
+    }
+}
+
+impl Drop for GameTestSession {
+    fn drop(&mut self) {
+        if let Some(execution) = &self.execution {
+            execution.close();
+        }
     }
 }
 

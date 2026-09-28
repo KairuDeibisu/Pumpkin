@@ -202,6 +202,7 @@ impl TaskScheduler {
                     crate::plugin::loader::wasm::wasm_host::PluginInstance::V0_1(instance) => {
                         instance.func_handle_task()
                     }
+                    crate::plugin::loader::wasm::wasm_host::PluginInstance::V0_2(_) => return,
                 };
                 if let Err(error) = plugin
                     .store

@@ -150,12 +150,18 @@ async fn prepare_test_run(
             GameTestError::World(format!("Unknown test instance '{}'", request.test_id))
         })?;
 
-    if test_instance.instance_type != TestType::BlockBased {
-        return Err(GameTestError::World(format!(
-            "Test instance '{}' has unsupported type '{:?}' (only block-based tests can be executed currently)",
-            request.test_id, test_instance.instance_type
-        )));
-    }
+    let function = if test_instance.instance_type == TestType::Function {
+        let id = test_instance.function.as_deref().ok_or_else(|| {
+            GameTestError::World("Missing GameTest function identifier".to_owned())
+        })?;
+        Some(server.game_test_functions.get(id).ok_or_else(|| {
+            GameTestError::World(format!(
+                "GameTest function '{id}' is not registered by a plugin"
+            ))
+        })?)
+    } else {
+        None
+    };
 
     let structure = server
         .datapack_manager
@@ -172,7 +178,7 @@ async fn prepare_test_run(
         forced_chunks: StdMutex::new(HashSet::new()),
     });
     let extra_rotation = GameTestRotation::from_steps(request.rotation_steps);
-    let run = GameTestSession::new_with_extra_rotation(
+    let mut run = GameTestSession::new_with_extra_rotation(
         test,
         adapter_world,
         Arc::new(template),
@@ -180,6 +186,9 @@ async fn prepare_test_run(
         request.test_z,
         extra_rotation,
     );
+    if let Some(function) = function {
+        run = run.with_function(function);
+    }
 
     Ok(GameTestManager::new(
         run,

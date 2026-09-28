@@ -1,5 +1,7 @@
 use wasmtime::component::bindgen;
 
+pub mod v0_2;
+
 bindgen!({
     path: "../pumpkin-plugin-wit/v0.1",
     world: "plugin",

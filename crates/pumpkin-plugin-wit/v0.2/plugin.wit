@@ -1,0 +1,12 @@
+package pumpkin:plugin@0.2.0;
+
+world plugin {
+    use gametest.{test};
+
+    import gametest;
+    export metadata;
+    export init-plugin: func();
+    export on-load: func() -> result<_, string>;
+    export on-unload: func() -> result<_, string>;
+    export handle-game-test: async func(handler-id: u32, test: borrow<test>) -> result<_, string>;
+}
